@@ -1,0 +1,12 @@
+Package: sfe
+Version: @VERSION@
+Section: editors
+Priority: optional
+Architecture: all
+Maintainer: changfengpro <2728019272@qq.com>
+Depends: python3, python3:any
+Homepage: https://github.com/changfengpro/SSH-file-editor
+Description: SSH-friendly terminal C code editor
+ sfe is a lightweight terminal editor for SSH sessions.
+ It keeps common Vim-style save and quit commands, and adds
+ C syntax highlighting plus VS Code-like completion behavior.

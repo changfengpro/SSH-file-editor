@@ -29,6 +29,28 @@ python3 --version
 
 ## 快速开始
 
+### 使用 deb 包安装
+
+下载 release 中的 `sfe_0.1.0_all.deb` 后安装：
+
+```bash
+sudo apt install ./sfe_0.1.0_all.deb
+```
+
+安装后可以直接运行：
+
+```bash
+sfe hello.c
+```
+
+卸载：
+
+```bash
+sudo apt remove sfe
+```
+
+### 从源码运行
+
 进入项目目录：
 
 ```bash
