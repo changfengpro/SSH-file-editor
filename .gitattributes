@@ -1,3 +1,4 @@
+*.gitattributes text eol=lf
 *.sh text eol=lf
 packaging/debian/sfe text eol=lf
 scripts/*.py text eol=lf
