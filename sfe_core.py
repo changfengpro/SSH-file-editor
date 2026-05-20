@@ -5,6 +5,7 @@ import re
 
 
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+NUMBER_RE = re.compile(r"\b(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)\b")
 
 
 class TextBuffer:
@@ -66,6 +67,9 @@ class TextBuffer:
         self.lines[self.cursor_row] = line[: self.cursor_col] + text + line[self.cursor_col :]
         self.cursor_col += len(text)
         self.dirty = True
+
+    def indent(self, width: int = 4) -> None:
+        self.insert(" " * width)
 
     def newline(self) -> None:
         line = self.current_line()
@@ -149,6 +153,120 @@ class VimCommandProcessor:
         if command in ("wq!", "x!"):
             return VimCommandResult(save=True, quit=True, force=True, message="written")
         return VimCommandResult(message=f"E492: Not an editor command: {command}")
+
+
+@dataclass(frozen=True)
+class SyntaxToken:
+    text: str
+    kind: str
+
+
+class SyntaxHighlighter:
+    KEYWORDS = {
+        "auto",
+        "break",
+        "case",
+        "char",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extern",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "register",
+        "restrict",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "struct",
+        "switch",
+        "typedef",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "while",
+    }
+
+    def tokenize(self, line: str) -> list[SyntaxToken]:
+        tokens: list[SyntaxToken] = []
+        index = 0
+        while index < len(line):
+            if line.startswith("//", index):
+                tokens.append(SyntaxToken(line[index:], "comment"))
+                break
+            if line.startswith("/*", index):
+                end = line.find("*/", index + 2)
+                if end == -1:
+                    tokens.append(SyntaxToken(line[index:], "comment"))
+                    break
+                end += 2
+                tokens.append(SyntaxToken(line[index:end], "comment"))
+                index = end
+                continue
+            char = line[index]
+            if char in ('"', "'"):
+                end = self._string_end(line, index, char)
+                tokens.append(SyntaxToken(line[index:end], "string"))
+                index = end
+                continue
+            if char == "#":
+                match = re.match(r"#[A-Za-z_][A-Za-z0-9_]*", line[index:])
+                if match:
+                    text = match.group(0)
+                    tokens.append(SyntaxToken(text, "preprocessor"))
+                    index += len(text)
+                    continue
+            number_match = NUMBER_RE.match(line, index)
+            if number_match:
+                text = number_match.group(0)
+                tokens.append(SyntaxToken(text, "number"))
+                index += len(text)
+                continue
+            word_match = WORD_RE.match(line, index)
+            if word_match:
+                text = word_match.group(0)
+                kind = "keyword" if text in self.KEYWORDS else "plain"
+                tokens.append(SyntaxToken(text, kind))
+                index += len(text)
+                continue
+            tokens.append(SyntaxToken(char, "plain"))
+            index += 1
+        return self._merge_plain(tokens)
+
+    def _string_end(self, line: str, start: int, quote: str) -> int:
+        index = start + 1
+        escaped = False
+        while index < len(line):
+            char = line[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                return index + 1
+            index += 1
+        return len(line)
+
+    def _merge_plain(self, tokens: list[SyntaxToken]) -> list[SyntaxToken]:
+        merged: list[SyntaxToken] = []
+        for token in tokens:
+            if merged and token.kind == "plain" and merged[-1].kind == "plain":
+                merged[-1] = SyntaxToken(merged[-1].text + token.text, "plain")
+            else:
+                merged.append(token)
+        return merged
 
 
 @dataclass(frozen=True)

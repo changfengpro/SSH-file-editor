@@ -1,6 +1,6 @@
 import unittest
 
-from sfe_core import CompletionEngine, TextBuffer, VimCommandProcessor
+from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, VimCommandProcessor
 
 
 class TextBufferTests(unittest.TestCase):
@@ -40,6 +40,16 @@ class TextBufferTests(unittest.TestCase):
         self.assertEqual(buf.lines, ["printf(print_total)"])
         self.assertEqual(buf.cursor_col, len("printf(print_total"))
 
+    def test_indent_inserts_four_spaces_at_cursor(self):
+        buf = TextBuffer(["int main(void) {"])
+        buf.cursor_row = 0
+        buf.cursor_col = 0
+
+        buf.indent()
+
+        self.assertEqual(buf.lines, ["    int main(void) {"])
+        self.assertEqual(buf.cursor_col, 4)
+
 
 class CompletionEngineTests(unittest.TestCase):
     def test_c_completion_uses_keywords_stdlib_and_buffer_identifiers(self):
@@ -77,6 +87,28 @@ class CompletionEngineTests(unittest.TestCase):
         self.assertIn("prepare_total", names)
         self.assertIn("printf", names)
         self.assertEqual(items[0].kind, "buffer")
+
+
+class SyntaxHighlighterTests(unittest.TestCase):
+    def test_highlights_c_keywords_and_preprocessor_directives(self):
+        highlighter = SyntaxHighlighter()
+
+        tokens = highlighter.tokenize("#define ITEM struct item { int count; }")
+        pairs = [(token.text, token.kind) for token in tokens]
+
+        self.assertIn(("#define", "preprocessor"), pairs)
+        self.assertIn(("struct", "keyword"), pairs)
+        self.assertIn(("int", "keyword"), pairs)
+
+    def test_highlights_strings_numbers_and_comments(self):
+        highlighter = SyntaxHighlighter()
+
+        tokens = highlighter.tokenize('printf("value=%d", 42); // show value')
+        pairs = [(token.text, token.kind) for token in tokens]
+
+        self.assertIn(('"value=%d"', "string"), pairs)
+        self.assertIn(("42", "number"), pairs)
+        self.assertIn(("// show value", "comment"), pairs)
 
 
 class VimCommandProcessorTests(unittest.TestCase):

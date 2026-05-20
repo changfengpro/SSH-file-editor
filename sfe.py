@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from sfe_core import CompletionEngine, TextBuffer, VimCommandProcessor
+from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, VimCommandProcessor
 
 try:
     import curses
@@ -31,6 +31,7 @@ class EditorApp:
         self.buffer = self._load_buffer(self.path)
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
+        self.highlighter = SyntaxHighlighter()
         self.row_offset = 0
         self.col_offset = 0
         self.mode = "NORMAL"
@@ -45,12 +46,30 @@ class EditorApp:
         curses.raw()
         curses.noecho()
         self.stdscr.keypad(True)
-        curses.use_default_colors()
+        self._init_colors()
         while True:
             self._draw()
             key = self.stdscr.get_wch()
             if self._handle_key(key):
                 break
+
+    def _init_colors(self) -> None:
+        if not curses.has_colors():
+            self.syntax_attrs = {}
+            return
+        curses.start_color()
+        curses.use_default_colors()
+        pairs = {
+            "keyword": (curses.COLOR_CYAN, -1),
+            "preprocessor": (curses.COLOR_MAGENTA, -1),
+            "string": (curses.COLOR_GREEN, -1),
+            "number": (curses.COLOR_YELLOW, -1),
+            "comment": (curses.COLOR_BLUE, -1),
+        }
+        self.syntax_attrs = {"plain": curses.A_NORMAL}
+        for index, (kind, colors) in enumerate(pairs.items(), start=1):
+            curses.init_pair(index, colors[0], colors[1])
+            self.syntax_attrs[kind] = curses.color_pair(index)
 
     def _load_buffer(self, path: Path | None) -> TextBuffer:
         if not path or not path.exists():
@@ -167,8 +186,10 @@ class EditorApp:
             self.buffer.delete()
         elif key in ("\n", "\r"):
             self.buffer.newline()
-        elif key in ("\t", CTRL_SPACE, "\x00"):
+        elif key in (CTRL_SPACE, "\x00"):
             self._open_completions()
+        elif key == "\t":
+            self.buffer.indent()
         elif isinstance(key, str) and key >= " " and key != "\x1b":
             self.buffer.insert(key)
             self.quit_warning = False
@@ -204,7 +225,7 @@ class EditorApp:
         return False
 
     def _handle_completion_key(self, key) -> bool:
-        if key in (curses.KEY_DOWN, "KEY_DOWN", CTRL_N, "\x0e", "\t"):
+        if key in (curses.KEY_DOWN, "KEY_DOWN", CTRL_N, "\x0e"):
             self.completion_index = (self.completion_index + 1) % len(self.completions)
             return True
         if key in (curses.KEY_UP, "KEY_UP", CTRL_P, "\x10"):
@@ -276,8 +297,7 @@ class EditorApp:
                 break
             line_no = f"{file_row + 1:>{gutter_width - 1}} "
             self.stdscr.addnstr(screen_row, 0, line_no, gutter_width, curses.A_DIM)
-            text = self.buffer.lines[file_row][self.col_offset :]
-            self.stdscr.addnstr(screen_row, gutter_width, text, max(0, width - gutter_width - 1))
+            self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], width)
         self._draw_completions(text_height, width, gutter_width)
         self._draw_status(height, width)
         cursor_y = self.buffer.cursor_row - self.row_offset
@@ -296,6 +316,26 @@ class EditorApp:
         else:
             bottom = self.status
         self.stdscr.addnstr(height - 1, 0, bottom.ljust(width), width - 1)
+
+    def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int) -> None:
+        visible_start = self.col_offset
+        visible_end = self.col_offset + max(0, width - gutter_width - 1)
+        x = gutter_width
+        position = 0
+        for token in self.highlighter.tokenize(line):
+            token_start = position
+            token_end = position + len(token.text)
+            position = token_end
+            if token_end <= visible_start:
+                continue
+            if token_start >= visible_end:
+                break
+            start = max(visible_start, token_start)
+            end = min(visible_end, token_end)
+            text = token.text[start - token_start : end - token_start]
+            attr = self.syntax_attrs.get(token.kind, curses.A_NORMAL)
+            self.stdscr.addnstr(screen_row, x, text, max(0, width - x - 1), attr)
+            x += len(text)
 
     def _draw_completions(self, text_height: int, width: int, gutter_width: int) -> None:
         if not self.completions:
