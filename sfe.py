@@ -21,6 +21,7 @@ CTRL_F = 6
 CTRL_N = 14
 CTRL_P = 16
 CTRL_SPACE = 0
+TAB = 9
 ESCAPE = 27
 
 
@@ -188,7 +189,7 @@ class EditorApp:
             self.buffer.newline()
         elif key in (CTRL_SPACE, "\x00"):
             self._open_completions()
-        elif key == "\t":
+        elif key in (TAB, "\t"):
             self.buffer.indent()
         elif isinstance(key, str) and key >= " " and key != "\x1b":
             self.buffer.insert(key)
