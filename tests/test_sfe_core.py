@@ -97,6 +97,62 @@ class CompletionEngineTests(unittest.TestCase):
         self.assertEqual(items[0].text, "int")
         self.assertEqual(items[0].kind, "keyword")
 
+    def test_completion_ranking_prefers_prefix_keywords_for_common_c_prefixes(self):
+        engine = CompletionEngine()
+        scenarios = [
+            ("ch", "char"),
+            ("str", "struct"),
+            ("ret", "return"),
+            ("uns", "unsigned"),
+            ("vo", "void"),
+        ]
+
+        for prefix, expected in scenarios:
+            with self.subTest(prefix=prefix):
+                lines = [
+                    "int main(void);",
+                    "char string_value[16];",
+                    "int return_code;",
+                    "void retry(void);",
+                    "unsigned value;",
+                ]
+
+                items = engine.suggest(prefix, lines, 0, len(prefix))
+
+                self.assertEqual(items[0].text, expected)
+                self.assertEqual(items[0].kind, "keyword")
+
+    def test_completion_ranking_keeps_buffer_symbols_before_stdlib_for_fuzzy_matches(self):
+        engine = CompletionEngine()
+        lines = [
+            "int print_total = 0;",
+            "void prepare_total(void);",
+            "int malloc_count = 0;",
+        ]
+
+        pt_names = [item.text for item in engine.suggest("pt", lines, 0, 2)]
+        mc_names = [item.text for item in engine.suggest("mc", lines, 0, 2)]
+
+        self.assertLess(pt_names.index("print_total"), pt_names.index("printf"))
+        self.assertLess(mc_names.index("malloc_count"), mc_names.index("malloc"))
+
+    def test_completion_ranking_keeps_prefix_buffer_symbols_before_stdlib(self):
+        engine = CompletionEngine()
+        lines = ["int main(void);", "int malloc_count = 0;"]
+
+        names = [item.text for item in engine.suggest("ma", lines, 0, 2)]
+
+        self.assertEqual(names[:3], ["main", "malloc_count", "malloc"])
+
+    def test_include_completion_ranks_prefix_headers_before_fuzzy_headers(self):
+        engine = CompletionEngine()
+        lines = ["#include <st"]
+
+        names = [item.text for item in engine.suggest("st", lines, 0, len(lines[0]))]
+
+        self.assertLess(names.index("stdio.h"), names.index("assert.h"))
+        self.assertTrue(all(name.endswith(".h") for name in names))
+
 
 class SyntaxHighlighterTests(unittest.TestCase):
     def test_highlights_c_keywords_and_preprocessor_directives(self):
