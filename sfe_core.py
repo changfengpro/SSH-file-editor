@@ -71,6 +71,10 @@ class TextBuffer:
     def indent(self, width: int = 4) -> None:
         self.insert(" " * width)
 
+    def insert_pair(self, opener: str, closer: str) -> None:
+        self.insert(opener + closer)
+        self.cursor_col -= len(closer)
+
     def newline(self) -> None:
         line = self.current_line()
         before = line[: self.cursor_col]
@@ -398,10 +402,11 @@ class CompletionEngine:
         before_cursor = lines[row][:col]
         return before_cursor.lstrip().startswith("#include")
 
-    def _match_score(self, prefix: str, text: str, kind: str) -> tuple[int, int, int, str] | None:
+    def _match_score(self, prefix: str, text: str, kind: str) -> tuple[int, int, int, int, str] | None:
         needle = prefix.lower()
         haystack = text.lower()
         if haystack.startswith(needle):
+            match_group = 0
             match_rank = 0
         else:
             pos = 0
@@ -412,9 +417,13 @@ class CompletionEngine:
                     return None
                 gaps += found - pos
                 pos = found + 1
+            match_group = 1
             match_rank = 1 + gaps
-        kind_rank = {"buffer": 0, "stdlib": 1, "keyword": 2, "header": 0}.get(kind, 9)
-        return (kind_rank, match_rank, len(text), haystack)
+        if match_rank == 0:
+            kind_rank = {"keyword": 0, "buffer": 1, "stdlib": 2, "header": 0}.get(kind, 9)
+        else:
+            kind_rank = {"buffer": 0, "stdlib": 1, "keyword": 2, "header": 0}.get(kind, 9)
+        return (match_group, kind_rank, match_rank, len(text), haystack)
 
     def _detail_for(self, kind: str) -> str:
         return {

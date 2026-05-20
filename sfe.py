@@ -23,6 +23,7 @@ CTRL_P = 16
 CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
+PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
 
 
 class EditorApp:
@@ -193,8 +194,11 @@ class EditorApp:
             self.buffer.delete()
         elif key in ("\n", "\r"):
             self.buffer.newline()
-        elif key in (CTRL_SPACE, "\x00"):
+        elif self._is_completion_trigger(key):
             self._open_completions()
+        elif isinstance(key, str) and key in PAIRS:
+            self.buffer.insert_pair(key, PAIRS[key])
+            self.quit_warning = False
         elif key in (TAB, "\t"):
             self.buffer.indent()
         elif isinstance(key, str) and key >= " " and key != "\x1b":
@@ -257,6 +261,11 @@ class EditorApp:
         self.completion_index = 0
         if not self.completions and show_status:
             self.status = f"No completion for {prefix!r}" if prefix else "Type a prefix before completing"
+
+    def _is_completion_trigger(self, key) -> bool:
+        if key in (CTRL_SPACE, "\x00", "\x1f"):
+            return True
+        return False
 
     def _accept_completion(self) -> None:
         if not self.completions:

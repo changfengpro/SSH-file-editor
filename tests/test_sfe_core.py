@@ -88,6 +88,15 @@ class CompletionEngineTests(unittest.TestCase):
         self.assertIn("printf", names)
         self.assertEqual(items[0].kind, "buffer")
 
+    def test_exact_prefix_keyword_ranks_before_fuzzy_matches(self):
+        engine = CompletionEngine()
+        lines = ["int main(void);"]
+
+        items = engine.suggest("in", lines, 0, 2)
+
+        self.assertEqual(items[0].text, "int")
+        self.assertEqual(items[0].kind, "keyword")
+
 
 class SyntaxHighlighterTests(unittest.TestCase):
     def test_highlights_c_keywords_and_preprocessor_directives(self):
