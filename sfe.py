@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import json
 import os
 import sys
 from pathlib import Path
@@ -24,12 +26,42 @@ CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
+DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
+KEY_SEQUENCE_TIMEOUT_MS = 25
+
+
+@dataclass(frozen=True)
+class EditorConfig:
+    auto_pair: bool = True
+    completion_key: str = "ctrl+space"
+
+
+def load_config(path: Path | None = None) -> EditorConfig:
+    path = DEFAULT_CONFIG_PATH if path is None else path
+    if not path.exists():
+        return EditorConfig()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return EditorConfig()
+    if not isinstance(raw, dict):
+        return EditorConfig()
+
+    defaults = EditorConfig()
+    auto_pair = raw.get("auto_pair", defaults.auto_pair)
+    completion_key = raw.get("completion_key", defaults.completion_key)
+    if not isinstance(auto_pair, bool):
+        auto_pair = defaults.auto_pair
+    if not isinstance(completion_key, str) or not normalize_key_name(completion_key):
+        completion_key = defaults.completion_key
+    return EditorConfig(auto_pair=auto_pair, completion_key=completion_key)
 
 
 class EditorApp:
-    def __init__(self, stdscr, path: str | None):
+    def __init__(self, stdscr, path: str | None, config: EditorConfig | None = None):
         self.stdscr = stdscr
         self.path = Path(path) if path else None
+        self.config = config if config is not None else EditorConfig()
         self.buffer = self._load_buffer(self.path)
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
@@ -51,8 +83,7 @@ class EditorApp:
         self._init_colors()
         while True:
             self._draw()
-            key = self.stdscr.get_wch()
-            if self._handle_key(key):
+            if self._handle_key_sequence(self._read_key_sequence()):
                 break
 
     def _init_colors(self) -> None:
@@ -98,6 +129,36 @@ class EditorApp:
         if self.mode == "NORMAL":
             return self._handle_normal_key(key)
         return self._handle_insert_key(key)
+
+    def _handle_key_sequence(self, keys) -> bool:
+        key = parse_key_sequence(keys)
+        if key is not None:
+            return self._handle_key(key)
+        should_quit = False
+        for item in keys:
+            should_quit = self._handle_key(item)
+            if should_quit:
+                break
+        return should_quit
+
+    def _read_key_sequence(self):
+        first = self.stdscr.get_wch()
+        if first not in (ESCAPE, "\x1b") or not hasattr(self.stdscr, "timeout"):
+            return [first]
+
+        sequence = [first]
+        self.stdscr.timeout(KEY_SEQUENCE_TIMEOUT_MS)
+        try:
+            while len(sequence) < 16 and could_be_csi_u_sequence(sequence):
+                try:
+                    sequence.append(self.stdscr.get_wch())
+                except curses.error:
+                    break
+                if parse_key_sequence(sequence) is not None:
+                    break
+        finally:
+            self.stdscr.timeout(-1)
+        return sequence
 
     def _handle_normal_key(self, key) -> bool:
         self.completions = []
@@ -192,11 +253,11 @@ class EditorApp:
             self.buffer.backspace()
         elif key in (curses.KEY_DC, "KEY_DC"):
             self.buffer.delete()
-        elif key in ("\n", "\r"):
-            self.buffer.newline()
         elif self._is_completion_trigger(key):
             self._open_completions()
-        elif isinstance(key, str) and key in PAIRS:
+        elif key in ("\n", "\r"):
+            self.buffer.newline()
+        elif self.config.auto_pair and isinstance(key, str) and key in PAIRS:
             self.buffer.insert_pair(key, PAIRS[key])
             self.quit_warning = False
         elif key in (TAB, "\t"):
@@ -245,7 +306,7 @@ class EditorApp:
         if key in (TAB, "\t"):
             self._accept_completion()
             return True
-        if key == ESCAPE:
+        if key in (ESCAPE, "\x1b"):
             self.completions = []
             return True
         return False
@@ -263,9 +324,13 @@ class EditorApp:
             self.status = f"No completion for {prefix!r}" if prefix else "Type a prefix before completing"
 
     def _is_completion_trigger(self, key) -> bool:
-        if key in (CTRL_SPACE, "\x00", "\x1f"):
+        expected = normalize_key_name(self.config.completion_key)
+        if not expected:
+            return False
+        actual_names = key_to_names(key)
+        if expected == "ctrl+space" and actual_names & {"ctrl+space", "ctrl+@", "ctrl+_"}:
             return True
-        return False
+        return expected in actual_names
 
     def _accept_completion(self) -> None:
         if not self.completions:
@@ -391,6 +456,101 @@ def re_match_completion_char(key: str) -> bool:
     return key.isalnum() or key == "_"
 
 
+def normalize_key_name(name: str) -> str:
+    value = name.strip().lower().replace("-", "+")
+    value = "+".join(part for part in value.split("+") if part)
+    aliases = {
+        "ctrl+space": "ctrl+space",
+        "ctrl+spacebar": "ctrl+space",
+        "control+space": "ctrl+space",
+        "control+spacebar": "ctrl+space",
+        "ctrl+j": "ctrl+j",
+        "control+j": "ctrl+j",
+        "ctrl+@": "ctrl+@",
+        "control+@": "ctrl+@",
+        "ctrl+_": "ctrl+_",
+        "control+_": "ctrl+_",
+        "tab": "tab",
+        "enter": "enter",
+        "return": "enter",
+    }
+    if value in aliases:
+        return aliases[value]
+    if len(value) == 6 and value.startswith("ctrl+") and value[-1].isalpha():
+        return value
+    return ""
+
+
+def key_to_names(key) -> set[str]:
+    if key in (CTRL_SPACE, "\x00"):
+        return {"ctrl+space", "ctrl+@"}
+    if key == "\x1f":
+        return {"ctrl+_"}
+    if key in (TAB, "\t"):
+        return {"tab", "ctrl+i"}
+    if key == "\n":
+        return {"enter", "ctrl+j"}
+    if key == "\r":
+        return {"enter", "ctrl+m"}
+    if isinstance(key, str) and len(key) == 1:
+        code = ord(key)
+        if 1 <= code <= 26:
+            return {f"ctrl+{chr(code + 96)}"}
+    return set()
+
+
+def parse_key_sequence(keys) -> int | str | None:
+    if len(keys) == 1 and isinstance(keys[0], str) and len(keys[0]) > 1:
+        return parse_key_sequence(list(keys[0]))
+    if keys == [ESCAPE] or keys == ["\x1b"]:
+        return "\x1b"
+    if len(keys) < 3 or keys[0] not in (ESCAPE, "\x1b") or keys[1] != "[":
+        return None
+    if keys[-1] == "~":
+        body = "".join(str(part) for part in keys[2:-1])
+        parts = body.split(";")
+        if len(parts) == 3 and parts[0] == "27" and parts[1].isdigit() and parts[2].isdigit():
+            modifiers = int(parts[1])
+            codepoint = int(parts[2])
+            ctrl_pressed = bool((modifiers - 1) & 4)
+            if ctrl_pressed and codepoint == 32:
+                return CTRL_SPACE
+        return None
+    if keys[-1] != "u":
+        return None
+    body = "".join(str(part) for part in keys[2:-1])
+    parts = body.split(";")
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return None
+    codepoint = int(parts[0])
+    modifiers = int(parts[1])
+    ctrl_pressed = bool((modifiers - 1) & 4)
+    if ctrl_pressed and codepoint == 32:
+        return CTRL_SPACE
+    if ctrl_pressed and 65 <= codepoint <= 90:
+        return chr(codepoint - 64)
+    if ctrl_pressed and 97 <= codepoint <= 122:
+        return chr(codepoint - 96)
+    return chr(codepoint) if 0 <= codepoint <= sys.maxunicode else None
+
+
+def could_be_csi_u_sequence(keys) -> bool:
+    if not keys:
+        return False
+    if keys[0] not in (ESCAPE, "\x1b"):
+        return False
+    if len(keys) == 1:
+        return True
+    if keys[1] != "[":
+        return False
+    if len(keys) == 2:
+        return True
+    allowed = set("0123456789;")
+    if keys[-1] == "~":
+        return True
+    return all(isinstance(part, str) and len(part) == 1 and part in allowed for part in keys[2:])
+
+
 def is_function_key(key, number: int) -> bool:
     if key == f"KEY_F({number})":
         return True
@@ -407,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not os.environ.get("TERM"):
         os.environ["TERM"] = "xterm-256color"
-    curses.wrapper(lambda stdscr: EditorApp(stdscr, args.file).run())
+    curses.wrapper(lambda stdscr: EditorApp(stdscr, args.file, load_config()).run())
     return 0
 
 

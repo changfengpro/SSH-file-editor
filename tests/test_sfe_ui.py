@@ -1,10 +1,11 @@
 import unittest
 
 import sfe
-from sfe import EditorApp
+from sfe import EditorApp, EditorConfig
 
 
 class FakeCurses:
+    error = RuntimeError
     KEY_LEFT = 260
     KEY_RIGHT = 261
     KEY_UP = 259
@@ -15,6 +16,20 @@ class FakeCurses:
     KEY_DC = 330
     KEY_F0 = 264
     KEY_RESIZE = 410
+
+
+class FakeInputScreen:
+    def __init__(self, keys):
+        self.keys = list(keys)
+        self.timeouts = []
+
+    def get_wch(self):
+        if not self.keys:
+            raise FakeCurses.error()
+        return self.keys.pop(0)
+
+    def timeout(self, value):
+        self.timeouts.append(value)
 
 
 class EditorInsertModeTests(unittest.TestCase):
@@ -81,6 +96,73 @@ class EditorInsertModeTests(unittest.TestCase):
 
         self.assertTrue(app.completions)
 
+    def test_ctrl_space_opens_completion_from_csi_u_sequence(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["in"]
+        app.buffer.cursor_col = 2
+
+        app._handle_key_sequence(["\x1b", "[", "3", "2", ";", "5", "u"])
+
+        self.assertTrue(app.completions)
+        self.assertEqual(app.completions[0].text, "int")
+        self.assertEqual(app.mode, "INSERT")
+
+    def test_read_key_sequence_collects_csi_u_ctrl_space(self):
+        screen = FakeInputScreen(list("\x1b[32;5u"))
+        app = EditorApp(stdscr=screen, path=None)
+
+        self.assertEqual(app._read_key_sequence(), ["\x1b", "[", "3", "2", ";", "5", "u"])
+        self.assertEqual(screen.timeouts, [sfe.KEY_SEQUENCE_TIMEOUT_MS, -1])
+
+    def test_read_key_sequence_keeps_plain_escape_on_timeout(self):
+        screen = FakeInputScreen(["\x1b"])
+        app = EditorApp(stdscr=screen, path=None)
+
+        self.assertEqual(app._read_key_sequence(), ["\x1b"])
+        self.assertEqual(screen.timeouts, [sfe.KEY_SEQUENCE_TIMEOUT_MS, -1])
+
+    def test_ctrl_space_opens_completion_from_combined_csi_u_string(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["in"]
+        app.buffer.cursor_col = 2
+
+        app._handle_key_sequence(["\x1b[32;5u"])
+
+        self.assertTrue(app.completions)
+
+    def test_ctrl_space_opens_completion_from_xterm_modify_other_keys_sequence(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["in"]
+        app.buffer.cursor_col = 2
+
+        app._handle_key_sequence(list("\x1b[27;5;32~"))
+
+        self.assertTrue(app.completions)
+
+    def test_configured_completion_key_opens_completion(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(completion_key="ctrl-j"))
+        app.mode = "INSERT"
+        app.buffer.lines = ["in"]
+        app.buffer.cursor_col = 2
+
+        app._handle_insert_key("\n")
+
+        self.assertTrue(app.completions)
+        self.assertEqual(app.buffer.lines, ["in"])
+
+    def test_default_ctrl_space_does_not_open_when_completion_key_is_changed(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(completion_key="ctrl-j"))
+        app.mode = "INSERT"
+        app.buffer.lines = ["in"]
+        app.buffer.cursor_col = 2
+
+        app._handle_insert_key(0)
+
+        self.assertFalse(app.completions)
+
     def test_insert_mode_keeps_plain_space_as_text(self):
         app = EditorApp(stdscr=None, path=None)
         app.mode = "INSERT"
@@ -113,6 +195,15 @@ class EditorInsertModeTests(unittest.TestCase):
 
                 self.assertEqual(app.buffer.lines, [expected])
                 self.assertEqual(app.buffer.cursor_col, 1)
+
+    def test_insert_mode_respects_disabled_auto_pair_config(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(auto_pair=False))
+        app.mode = "INSERT"
+
+        app._handle_insert_key("{")
+
+        self.assertEqual(app.buffer.lines, ["{"])
+        self.assertEqual(app.buffer.cursor_col, 1)
 
 
 if __name__ == "__main__":
