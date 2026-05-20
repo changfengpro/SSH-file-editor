@@ -237,7 +237,7 @@ class SyntaxHighlighter:
             word_match = WORD_RE.match(line, index)
             if word_match:
                 text = word_match.group(0)
-                kind = "keyword" if text in self.KEYWORDS else "plain"
+                kind = self._word_kind(line, word_match.end(), text)
                 tokens.append(SyntaxToken(text, kind))
                 index += len(text)
                 continue
@@ -258,6 +258,16 @@ class SyntaxHighlighter:
                 return index + 1
             index += 1
         return len(line)
+
+    def _word_kind(self, line: str, word_end: int, text: str) -> str:
+        if text in self.KEYWORDS:
+            return "keyword"
+        after_word = word_end
+        while after_word < len(line) and line[after_word].isspace():
+            after_word += 1
+        if after_word < len(line) and line[after_word] == "(":
+            return "function"
+        return "plain"
 
     def _merge_plain(self, tokens: list[SyntaxToken]) -> list[SyntaxToken]:
         merged: list[SyntaxToken] = []

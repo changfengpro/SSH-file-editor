@@ -33,6 +33,32 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.lines, ["    "])
         self.assertEqual(app.buffer.cursor_col, 4)
 
+    def test_insert_mode_accepts_completion_with_tab(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["pri"]
+        app.buffer.cursor_col = 3
+        app._open_completions()
+
+        app._handle_insert_key("\t")
+
+        self.assertEqual(app.buffer.lines, ["printf"])
+        self.assertEqual(app.buffer.cursor_col, 6)
+        self.assertEqual(app.completions, [])
+
+    def test_insert_mode_newline_does_not_accept_completion(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["pri"]
+        app.buffer.cursor_col = 3
+        app._open_completions()
+
+        app._handle_insert_key("\n")
+
+        self.assertEqual(app.buffer.lines, ["pri", ""])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
+        self.assertEqual(app.completions, [])
+
 
 if __name__ == "__main__":
     unittest.main()

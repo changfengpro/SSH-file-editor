@@ -63,6 +63,7 @@ class EditorApp:
         pairs = {
             "keyword": (curses.COLOR_CYAN, -1),
             "preprocessor": (curses.COLOR_MAGENTA, -1),
+            "function": (curses.COLOR_YELLOW, -1),
             "string": (curses.COLOR_GREEN, -1),
             "number": (curses.COLOR_YELLOW, -1),
             "comment": (curses.COLOR_BLUE, -1),
@@ -70,7 +71,10 @@ class EditorApp:
         self.syntax_attrs = {"plain": curses.A_NORMAL}
         for index, (kind, colors) in enumerate(pairs.items(), start=1):
             curses.init_pair(index, colors[0], colors[1])
-            self.syntax_attrs[kind] = curses.color_pair(index)
+            attr = curses.color_pair(index)
+            if kind == "function":
+                attr |= curses.A_BOLD
+            self.syntax_attrs[kind] = attr
 
     def _load_buffer(self, path: Path | None) -> TextBuffer:
         if not path or not path.exists():
@@ -166,9 +170,11 @@ class EditorApp:
         if key in (CTRL_F, "\x06"):
             self._search()
             return False
-        if self.completions and self._handle_completion_key(key):
+        had_completions = bool(self.completions)
+        if had_completions and self._handle_completion_key(key):
             return False
-        self.completions = []
+        if had_completions:
+            self.completions = []
         if key in (curses.KEY_LEFT, "KEY_LEFT"):
             self.buffer.move_left()
         elif key in (curses.KEY_RIGHT, "KEY_RIGHT"):
@@ -232,7 +238,7 @@ class EditorApp:
         if key in (curses.KEY_UP, "KEY_UP", CTRL_P, "\x10"):
             self.completion_index = (self.completion_index - 1) % len(self.completions)
             return True
-        if key in ("\n", "\r"):
+        if key in (TAB, "\t"):
             self._accept_completion()
             return True
         if key == ESCAPE:

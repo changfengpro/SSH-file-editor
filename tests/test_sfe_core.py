@@ -110,6 +110,15 @@ class SyntaxHighlighterTests(unittest.TestCase):
         self.assertIn(("42", "number"), pairs)
         self.assertIn(("// show value", "comment"), pairs)
 
+    def test_highlights_c_function_names(self):
+        highlighter = SyntaxHighlighter()
+
+        tokens = highlighter.tokenize("int main() { return printf(\"ok\"); }")
+        pairs = [(token.text, token.kind) for token in tokens]
+
+        self.assertIn(("main", "function"), pairs)
+        self.assertIn(("printf", "function"), pairs)
+
 
 class VimCommandProcessorTests(unittest.TestCase):
     def test_write_command_requests_save(self):
