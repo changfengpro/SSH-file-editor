@@ -34,10 +34,10 @@ python3 --version
 
 ### 使用 deb 包安装
 
-下载 release 中的 `sfe_0.3.0_all.deb` 后安装：
+下载 release 中的 `sfe_0.4.0_all.deb` 后安装：
 
 ```bash
-sudo apt install ./sfe_0.3.0_all.deb
+sudo apt install ./sfe_0.4.0_all.deb
 ```
 
 安装后可以直接运行：
@@ -162,6 +162,28 @@ Ctrl-N/P     在诊断之间前后跳转
 
 `:set` 命令会写入 `~/.config/sfe/config.json`。
 
+## v0.4.0 项目工作流
+
+`sfe` 现在会通过 `Makefile`、`.git` 或 `compile_commands.json` 向上识别项目根目录，并围绕项目提供文件、构建和错误导航能力：
+
+```text
+:tree                查看项目文件树
+:open main           模糊打开匹配的项目文件
+:recent              查看最近打开的项目文件
+:make                执行构建命令，并解析编译器错误
+:run                 运行配置的命令或上次构建产物
+:errors              查看 :make 捕获的错误和警告
+Ctrl-N/P             在内置诊断和构建错误之间跳转
+```
+
+构建命令选择规则：
+
+- 如果配置了 `build_command`，`:make` 直接执行该命令。
+- 如果项目根目录有 `Makefile`，`:make` 默认执行 `make`。
+- 如果当前文件是 `.c` 文件且没有 `Makefile`，`:make` 会使用 `gcc <file> -o <stem>` 作为 fallback。
+
+编译器输出支持常见 GCC/Make 格式，例如 `src/main.c:4:12: error: ...`。解析出的错误会进入 `:errors`，也可以用 `Ctrl-N` / `Ctrl-P` 跳转到对应文件和行列。
+
 ## Vim 风格按键
 
 ### 模式切换
@@ -263,8 +285,16 @@ pr
 ```json
 {
   "auto_pair": true,
+  "build_command": "",
   "completion_key": "ctrl+space",
   "indent_width": 4,
+  "project_root_markers": [
+    "Makefile",
+    ".git",
+    "compile_commands.json"
+  ],
+  "recent_files_limit": 20,
+  "run_command": "",
   "show_line_numbers": true,
   "scan_local_headers": true,
   "signature_help": true
@@ -278,8 +308,16 @@ mkdir -p ~/.config/sfe
 cat > ~/.config/sfe/config.json <<'EOF'
 {
   "auto_pair": false,
+  "build_command": "",
   "completion_key": "ctrl+space",
   "indent_width": 4,
+  "project_root_markers": [
+    "Makefile",
+    ".git",
+    "compile_commands.json"
+  ],
+  "recent_files_limit": 20,
+  "run_command": "",
   "show_line_numbers": true,
   "scan_local_headers": true,
   "signature_help": true
@@ -292,8 +330,16 @@ EOF
 ```json
 {
   "auto_pair": true,
+  "build_command": "",
   "completion_key": "ctrl-g",
   "indent_width": 4,
+  "project_root_markers": [
+    "Makefile",
+    ".git",
+    "compile_commands.json"
+  ],
+  "recent_files_limit": 20,
+  "run_command": "",
   "show_line_numbers": true,
   "scan_local_headers": true,
   "signature_help": true
@@ -301,6 +347,13 @@ EOF
 ```
 
 关闭行号、同目录头文件扫描或签名提示时，把对应值改为 `false`。`indent_width` 支持 1 到 8 的整数。
+
+项目工作流相关配置：
+
+- `build_command`：`:make` 使用的构建命令，留空时自动选择 `make` 或 `gcc` fallback。
+- `run_command`：`:run` 使用的运行命令，留空时尝试使用上次构建产物。
+- `project_root_markers`：用于识别项目根目录的标记文件或目录。
+- `recent_files_limit`：`:recent` 最多保留的项目文件数量。
 
 `completion_key` 支持 `ctrl+space`、`ctrl-a` 到 `ctrl-z`、`ctrl-@`、`ctrl-_`、`tab` 和 `enter`。
 终端可能无法区分某些组合键，例如 `Ctrl-J` 通常等同于 Enter，`Ctrl-I` 通常等同于 Tab；

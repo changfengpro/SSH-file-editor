@@ -14,9 +14,9 @@ save and quit commands while adding C syntax highlighting, completions,
 local header scanning, line numbers, smart indentation, undo/redo, and simple
 function signature help.
 .PP
-Version 0.3.0 adds project-level C symbol indexing, richer completion sources,
-snippets, lightweight diagnostics, definition jumps, diagnostic navigation, and
-in-editor helper commands for common SSH editing workflows.
+Version 0.4.0 adds project file workflow commands: tree view, fuzzy project
+open, recent files, build/run helpers, compiler error parsing, and navigation
+across both editor diagnostics and build diagnostics.
 .PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
@@ -69,7 +69,25 @@ Jump to the definition of the symbol under the cursor.
 Jump back after a definition jump.
 .TP
 .B Ctrl-N, Ctrl-P
-Move to the next or previous diagnostic.
+Move to the next or previous editor diagnostic or build error.
+.TP
+.B :tree
+Show files under the detected project root.
+.TP
+.B :open PATTERN
+Fuzzy-open the best matching project file.
+.TP
+.B :recent
+Show recently opened project files.
+.TP
+.B :make
+Run the configured build command, or use make / gcc fallback.
+.TP
+.B :run
+Run the configured run command or the last detected build output.
+.TP
+.B :errors
+Show compiler errors and warnings captured by :make.
 .TP
 .B :goto N
 Move to line N.
@@ -125,8 +143,21 @@ Supported keys include
 .B indent_width,
 .B show_line_numbers,
 .B scan_local_headers,
+.B signature_help,
+.B build_command,
+.B run_command,
+.B project_root_markers,
 and
-.B signature_help.
+.B recent_files_limit.
+.PP
+If
+.B build_command
+is empty,
+.B :make
+uses
+.B make
+when a Makefile exists. For a current C source file, it falls back to
+.B gcc <file> -o <stem>.
 .SH FILES
 .TP
 .B /etc/sfe/config.json

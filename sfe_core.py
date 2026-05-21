@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
+import shlex
 
 
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -467,14 +469,14 @@ class ProjectIndex:
 
 
 class ProjectScanner:
-    IGNORED_DIRS = {".git", ".hg", ".svn", ".worktrees", "build", "dist", "__pycache__"}
+    IGNORED_DIRS = {".git", ".hg", ".svn", ".worktrees", ".sfe", "build", "dist", "__pycache__"}
     SUFFIXES = {".c", ".h"}
 
     def scan(self, root: Path) -> ProjectIndex:
         root = Path(root)
         symbols: list[ProjectSymbol] = []
         try:
-            paths = sorted(path for path in root.rglob("*") if self._should_scan(path))
+            paths = sorted(path for path in root.rglob("*") if self._should_scan(path, root))
         except OSError:
             return ProjectIndex(root, [])
         for path in paths:
@@ -485,10 +487,16 @@ class ProjectScanner:
             symbols.extend(self._scan_file(path, lines))
         return ProjectIndex(root, symbols)
 
-    def _should_scan(self, path: Path) -> bool:
+    def _should_scan(self, path: Path, root: Path | None = None) -> bool:
         if not path.is_file() or path.suffix not in self.SUFFIXES:
             return False
-        return not any(part in self.IGNORED_DIRS for part in path.parts)
+        parts = path.parts
+        if root is not None:
+            try:
+                parts = path.relative_to(root).parts
+            except ValueError:
+                parts = path.parts
+        return not any(part in self.IGNORED_DIRS for part in parts)
 
     def _scan_file(self, path: Path, lines: list[str]) -> list[ProjectSymbol]:
         symbols: list[ProjectSymbol] = []
@@ -522,6 +530,211 @@ class ProjectScanner:
                 if name not in SyntaxHighlighter.KEYWORDS:
                     symbols.append(ProjectSymbol(name, "global", path, row, line.find(name), f"{path.name}:{row + 1}"))
         return symbols
+
+
+@dataclass(frozen=True)
+class ProjectFile:
+    path: Path
+    relative_path: str
+    size: int = 0
+
+
+@dataclass(frozen=True)
+class ProjectFiles:
+    root: Path
+    files: list[ProjectFile]
+
+
+def find_project_root(start: Path, markers: tuple[str, ...] | list[str]) -> Path:
+    current = Path(start)
+    if current.is_file():
+        current = current.parent
+    current = current.resolve()
+    marker_names = tuple(mark for mark in markers if mark)
+    for candidate in (current, *current.parents):
+        if any((candidate / marker).exists() for marker in marker_names):
+            return candidate
+    return current
+
+
+class ProjectFileScanner:
+    IGNORED_DIRS = ProjectScanner.IGNORED_DIRS
+
+    def scan(self, root: Path) -> ProjectFiles:
+        root = Path(root)
+        files: list[ProjectFile] = []
+        try:
+            paths = sorted(path for path in root.rglob("*") if self._should_include(path, root))
+        except OSError:
+            return ProjectFiles(root, [])
+        for path in paths:
+            try:
+                relative_path = path.relative_to(root).as_posix()
+                size = path.stat().st_size
+            except OSError:
+                continue
+            files.append(ProjectFile(path, relative_path, size))
+        return ProjectFiles(root, files)
+
+    def _should_include(self, path: Path, root: Path | None = None) -> bool:
+        if not path.is_file():
+            return False
+        parts = path.parts
+        if root is not None:
+            try:
+                parts = path.relative_to(root).parts
+            except ValueError:
+                parts = path.parts
+        return not any(part in self.IGNORED_DIRS for part in parts)
+
+
+def fuzzy_match_files(query: str, files: list[ProjectFile], limit: int = 20) -> list[ProjectFile]:
+    needle = query.strip().lower().replace("\\", "/")
+    if not needle:
+        return files[:limit]
+    scored: list[tuple[tuple[int, int, int, int, str], ProjectFile]] = []
+    for file in files:
+        score = _file_match_score(needle, file.relative_path)
+        if score is not None:
+            scored.append((score, file))
+    scored.sort(key=lambda item: item[0])
+    return [file for _, file in scored[:limit]]
+
+
+def _file_match_score(needle: str, relative_path: str) -> tuple[int, int, int, int, str] | None:
+    path_text = relative_path.lower()
+    name_text = Path(relative_path).name.lower()
+    for group, text in ((0, name_text), (1, path_text)):
+        found_at = text.find(needle)
+        if found_at >= 0:
+            return (group, 0, found_at, len(relative_path), path_text)
+    path_positions = _subsequence_positions(needle, path_text)
+    if path_positions is None:
+        return None
+    name_positions = _subsequence_positions(needle, name_text)
+    if name_positions is not None:
+        positions = name_positions
+        group = 2
+    else:
+        positions = path_positions
+        group = 3
+    gaps = sum(positions[index] - positions[index - 1] - 1 for index in range(1, len(positions)))
+    return (group, 1 + gaps, positions[0], len(relative_path), path_text)
+
+
+def _subsequence_positions(needle: str, haystack: str) -> list[int] | None:
+    positions: list[int] = []
+    offset = 0
+    for char in needle:
+        found = haystack.find(char, offset)
+        if found == -1:
+            return None
+        positions.append(found)
+        offset = found + 1
+    return positions
+
+
+class RecentFilesStore:
+    def __init__(self, path: Path, limit: int = 20):
+        self.path = Path(path)
+        self.limit = max(1, limit)
+
+    def load(self) -> list[str]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        entries = [item for item in raw if isinstance(item, str) and item]
+        return entries[: self.limit]
+
+    def add(self, path: Path, root: Path) -> list[str]:
+        try:
+            relative = Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+        except ValueError:
+            relative = Path(path).as_posix()
+        entries = [item for item in self.load() if item != relative]
+        entries.insert(0, relative)
+        entries = entries[: self.limit]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+        return entries
+
+
+@dataclass(frozen=True)
+class BuildDiagnostic:
+    path: Path
+    row: int
+    col: int
+    message: str
+    severity: str = "error"
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    command: str
+    run_command: str = ""
+
+
+class BuildOutputParser:
+    DIAGNOSTIC_RE = re.compile(r"^(.+?):(\d+):(?:(\d+):)?\s*(error|warning|note):\s*(.+)$")
+
+    def parse(self, output: str) -> list[BuildDiagnostic]:
+        diagnostics: list[BuildDiagnostic] = []
+        for line in output.splitlines():
+            match = self.DIAGNOSTIC_RE.match(line.strip())
+            if not match:
+                continue
+            path_text, row_text, col_text, severity, message = match.groups()
+            row = max(0, int(row_text) - 1)
+            col = max(0, int(col_text) - 1) if col_text else 0
+            diagnostics.append(BuildDiagnostic(Path(path_text), row, col, message, severity))
+        return diagnostics
+
+
+class BuildCommandResolver:
+    @classmethod
+    def resolve(cls, configured_command: str, current_file: Path | None, project_root: Path) -> BuildResult:
+        command = configured_command.strip()
+        if command:
+            return BuildResult(command, cls._run_command_from_build(command))
+        makefile = project_root / "Makefile"
+        if makefile.exists():
+            return BuildResult("make", cls._run_command_from_makefile(makefile))
+        if current_file is not None and current_file.suffix == ".c":
+            try:
+                relative = current_file.relative_to(project_root).as_posix()
+            except ValueError:
+                relative = current_file.as_posix()
+            output = current_file.stem
+            return BuildResult(f"gcc {relative} -o {output}", f"./{output}")
+        return BuildResult("", "")
+
+    @classmethod
+    def _run_command_from_makefile(cls, makefile: Path) -> str:
+        try:
+            text = makefile.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return cls._run_command_from_build(text)
+
+    @classmethod
+    def _run_command_from_build(cls, command: str) -> str:
+        tokens = cls._tokens(command)
+        for index, token in enumerate(tokens[:-1]):
+            if token == "-o":
+                return f"./{Path(tokens[index + 1]).name}"
+            if token.startswith("-o") and len(token) > 2:
+                return f"./{Path(token[2:]).name}"
+        return ""
+
+    @staticmethod
+    def _tokens(command: str) -> list[str]:
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return command.split()
 
 
 @dataclass(frozen=True)

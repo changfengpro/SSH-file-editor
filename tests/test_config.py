@@ -29,6 +29,10 @@ class EditorConfigTests(unittest.TestCase):
                         "show_line_numbers": False,
                         "scan_local_headers": False,
                         "signature_help": False,
+                        "build_command": "make debug",
+                        "run_command": "./debug",
+                        "project_root_markers": ["Makefile", ".git"],
+                        "recent_files_limit": 12,
                     }
                 ),
                 encoding="utf-8",
@@ -42,6 +46,10 @@ class EditorConfigTests(unittest.TestCase):
         self.assertFalse(config.show_line_numbers)
         self.assertFalse(config.scan_local_headers)
         self.assertFalse(config.signature_help)
+        self.assertEqual(config.build_command, "make debug")
+        self.assertEqual(config.run_command, "./debug")
+        self.assertEqual(config.project_root_markers, ("Makefile", ".git"))
+        self.assertEqual(config.recent_files_limit, 12)
 
     def test_load_config_merges_system_then_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,7 +63,7 @@ class EditorConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             user_path.write_text(
-                json.dumps({"completion_key": "ctrl-g", "show_line_numbers": True}),
+                json.dumps({"completion_key": "ctrl-g", "show_line_numbers": True, "build_command": "make local"}),
                 encoding="utf-8",
             )
 
@@ -64,6 +72,7 @@ class EditorConfigTests(unittest.TestCase):
         self.assertEqual(config.indent_width, 2)
         self.assertTrue(config.show_line_numbers)
         self.assertEqual(config.completion_key, "ctrl-g")
+        self.assertEqual(config.build_command, "make local")
 
     def test_load_config_ignores_invalid_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,6 +96,10 @@ class EditorConfigTests(unittest.TestCase):
                         "show_line_numbers": "yes",
                         "scan_local_headers": "no",
                         "signature_help": 1,
+                        "build_command": 42,
+                        "run_command": False,
+                        "project_root_markers": ["", 1],
+                        "recent_files_limit": 0,
                     }
                 ),
                 encoding="utf-8",
@@ -98,6 +111,10 @@ class EditorConfigTests(unittest.TestCase):
         self.assertTrue(config.show_line_numbers)
         self.assertTrue(config.scan_local_headers)
         self.assertTrue(config.signature_help)
+        self.assertEqual(config.build_command, "")
+        self.assertEqual(config.run_command, "")
+        self.assertEqual(config.project_root_markers, EditorConfig().project_root_markers)
+        self.assertEqual(config.recent_files_limit, 20)
 
 
 if __name__ == "__main__":

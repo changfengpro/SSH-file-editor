@@ -1,7 +1,15 @@
 {
   "auto_pair": true,
+  "build_command": "",
   "completion_key": "ctrl+space",
   "indent_width": 4,
+  "project_root_markers": [
+    "Makefile",
+    ".git",
+    "compile_commands.json"
+  ],
+  "recent_files_limit": 20,
+  "run_command": "",
   "show_line_numbers": true,
   "scan_local_headers": true,
   "signature_help": true

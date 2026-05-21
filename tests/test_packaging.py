@@ -65,6 +65,10 @@ class PackagingTests(unittest.TestCase):
             version = read_deb_member(deb_path, "data.tar.gz", "./usr/lib/sfe/VERSION")
 
         self.assertIn(b'"indent_width": 4', config)
+        self.assertIn(b'"build_command": ""', config)
+        self.assertIn(b'"run_command": ""', config)
+        self.assertIn(b'"project_root_markers"', config)
+        self.assertIn(b'"recent_files_limit": 20', config)
         self.assertTrue(gzip.decompress(man_page).startswith(b".TH SFE 1"))
         self.assertTrue(upgrade.startswith(b"#!/bin/sh\n"))
         self.assertNotIn(b"\r\n", upgrade)

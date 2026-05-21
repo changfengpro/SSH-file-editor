@@ -3,24 +3,34 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
 
 from sfe_core import (
+    BuildCommandResolver,
+    BuildDiagnostic,
+    BuildOutputParser,
     CDiagnosticEngine,
     CompletionEngine,
     HeaderIndex,
     HeaderScanner,
+    ProjectFileScanner,
+    ProjectFiles,
     ProjectIndex,
     ProjectScanner,
+    RecentFilesStore,
     SignatureHelpEngine,
     SyntaxHighlighter,
     TextBuffer,
     UndoManager,
     VimCommandProcessor,
+    find_project_root,
+    fuzzy_match_files,
 )
 
 try:
@@ -64,6 +74,10 @@ class EditorConfig:
     show_line_numbers: bool = True
     scan_local_headers: bool = True
     signature_help: bool = True
+    build_command: str = ""
+    run_command: str = ""
+    project_root_markers: tuple[str, ...] = ("Makefile", ".git", "compile_commands.json")
+    recent_files_limit: int = 20
 
 
 def load_config(
@@ -100,6 +114,10 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
     show_line_numbers = raw.get("show_line_numbers", base.show_line_numbers)
     scan_local_headers = raw.get("scan_local_headers", base.scan_local_headers)
     signature_help = raw.get("signature_help", base.signature_help)
+    build_command = raw.get("build_command", base.build_command)
+    run_command = raw.get("run_command", base.run_command)
+    project_root_markers = raw.get("project_root_markers", base.project_root_markers)
+    recent_files_limit = raw.get("recent_files_limit", base.recent_files_limit)
     if not isinstance(auto_pair, bool):
         auto_pair = base.auto_pair
     if not isinstance(completion_key, str) or not normalize_key_name(completion_key):
@@ -112,6 +130,18 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
         scan_local_headers = base.scan_local_headers
     if not isinstance(signature_help, bool):
         signature_help = base.signature_help
+    if not isinstance(build_command, str):
+        build_command = base.build_command
+    if not isinstance(run_command, str):
+        run_command = base.run_command
+    if not (
+        isinstance(project_root_markers, list | tuple)
+        and project_root_markers
+        and all(isinstance(item, str) and item for item in project_root_markers)
+    ):
+        project_root_markers = base.project_root_markers
+    if not isinstance(recent_files_limit, int) or not 1 <= recent_files_limit <= 200:
+        recent_files_limit = base.recent_files_limit
     return EditorConfig(
         auto_pair=auto_pair,
         completion_key=completion_key,
@@ -119,6 +149,10 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
         show_line_numbers=show_line_numbers,
         scan_local_headers=scan_local_headers,
         signature_help=signature_help,
+        build_command=build_command,
+        run_command=run_command,
+        project_root_markers=tuple(project_root_markers),
+        recent_files_limit=recent_files_limit,
     )
 
 
@@ -132,10 +166,20 @@ class EditorApp:
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
         self.highlighter = SyntaxHighlighter()
+        self.project_root = self._find_project_root()
         self.header_index = self._load_header_index()
         self.project_index = self._load_project_index()
+        self.project_files = self._load_project_files()
         self.diagnostic_engine = CDiagnosticEngine()
         self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
+        self.build_diagnostics: list[BuildDiagnostic] = []
+        self.build_output = ""
+        self.last_build_command = ""
+        self.last_run_command = ""
+        self.build_runner = self._run_shell_command
+        self.recent_store_path = self._default_recent_store_path()
+        if self.path is not None and self.stdscr is not None:
+            self._remember_recent_file(self.path)
         self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
         self.row_offset = 0
         self.col_offset = 0
@@ -197,13 +241,27 @@ class EditorApp:
         return HeaderScanner().scan(self.path.parent)
 
     def _load_project_index(self) -> ProjectIndex | None:
+        if self.project_root is None:
+            return None
+        return ProjectScanner().scan(self.project_root)
+
+    def _find_project_root(self) -> Path | None:
         if self.path is None:
             return None
-        return ProjectScanner().scan(self.path.parent)
+        start = self.path if self.path.exists() else self.path.parent
+        return find_project_root(start, self.config.project_root_markers)
+
+    def _load_project_files(self) -> ProjectFiles | None:
+        if self.project_root is None:
+            return None
+        return ProjectFileScanner().scan(self.project_root)
 
     def _reload_file_context(self) -> None:
+        self.project_root = self._find_project_root()
+        self.recent_store_path = self._default_recent_store_path()
         self.header_index = self._load_header_index()
         self.project_index = self._load_project_index()
+        self.project_files = self._load_project_files()
         self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
         self._refresh_diagnostics()
 
@@ -221,6 +279,7 @@ class EditorApp:
         self.buffer.dirty = False
         self.status = f"Saved {self.path}"
         self._reload_file_context()
+        self._remember_recent_file(self.path)
 
     def _handle_key(self, key) -> bool:
         if self.mode == "COMMAND":
@@ -475,6 +534,24 @@ class EditorApp:
         if name in ("diag", "diagnostics"):
             self._show_diagnostics()
             return True
+        if name == "tree":
+            self._show_project_tree()
+            return True
+        if name == "open" and args:
+            self._command_open(" ".join(args))
+            return True
+        if name == "recent":
+            self._show_recent_files()
+            return True
+        if name == "make":
+            self._run_build()
+            return True
+        if name == "run":
+            self._run_last_command()
+            return True
+        if name in ("errors", "build-errors"):
+            self._show_build_errors()
+            return True
         if name in ("help", "h"):
             self._show_help()
             return True
@@ -522,12 +599,93 @@ class EditorApp:
         self.mode = "LIST"
         self.status = "Diagnostics: " + " | ".join(self.list_lines[:3])
 
+    def _show_project_tree(self) -> None:
+        self.project_files = self._load_project_files()
+        self.list_title = "Project"
+        if not self.project_files or not self.project_files.files:
+            self.list_lines = ["No project files"]
+        else:
+            self.list_lines = [file.relative_path for file in self.project_files.files]
+        self.mode = "LIST"
+        self.status = "Project: " + " | ".join(self.list_lines[:3])
+
+    def _command_open(self, query: str) -> None:
+        self.project_files = self._load_project_files()
+        if not self.project_files:
+            self.status = "No project root"
+            return
+        matches = fuzzy_match_files(query, self.project_files.files, limit=1)
+        if not matches:
+            self.status = f"No file matches: {query}"
+            return
+        self._open_file(matches[0].path)
+
+    def _show_recent_files(self) -> None:
+        entries = RecentFilesStore(self.recent_store_path, self.config.recent_files_limit).load()
+        self.list_title = "Recent"
+        self.list_lines = entries or ["No recent files"]
+        self.mode = "LIST"
+        self.status = "Recent: " + " | ".join(self.list_lines[:3])
+
+    def _run_build(self) -> None:
+        if self.path is not None and self.buffer.dirty:
+            self._save()
+        project_root = self.project_root or (self.path.parent if self.path else Path.cwd())
+        result = BuildCommandResolver.resolve(self.config.build_command, self.path, project_root)
+        if not result.command:
+            self.status = "No build command"
+            return
+        completed = self.build_runner(result.command, project_root)
+        output = (completed.stdout or "") + (completed.stderr or "")
+        self.last_build_command = result.command
+        self.last_run_command = self.config.run_command.strip() or result.run_command
+        self._set_build_output(output, completed.returncode)
+
+    def _run_last_command(self) -> None:
+        command = self.config.run_command.strip() or self.last_run_command
+        if not command:
+            project_root = self.project_root or (self.path.parent if self.path else Path.cwd())
+            command = BuildCommandResolver.resolve("", self.path, project_root).run_command
+        if not command:
+            self.status = "No run command"
+            return
+        project_root = self.project_root or (self.path.parent if self.path else Path.cwd())
+        completed = self.build_runner(command, project_root)
+        output = (completed.stdout or "") + (completed.stderr or "")
+        self.last_run_command = command
+        self.status = f"Run OK: {command}" if completed.returncode == 0 else f"Run failed ({completed.returncode}): {command}"
+        if output:
+            self.build_output = output
+
+    def _run_shell_command(self, command: str, cwd: Path):
+        return subprocess.run(command, cwd=cwd, capture_output=True, text=True, shell=True)
+
+    def _set_build_output(self, output: str, returncode: int) -> None:
+        self.build_output = output
+        self.build_diagnostics = BuildOutputParser().parse(output)
+        if returncode == 0:
+            self.status = f"Build OK: {len(self.build_diagnostics)} diagnostics"
+        else:
+            self.status = f"Build failed ({returncode}): {len(self.build_diagnostics)} diagnostics"
+
+    def _show_build_errors(self) -> None:
+        self.list_title = "Build Errors"
+        self.list_lines = [
+            f"{diag.path.as_posix()}:{diag.row + 1}:{diag.col + 1} {diag.severity}: {diag.message}"
+            for diag in self.build_diagnostics
+        ]
+        if not self.list_lines:
+            self.list_lines = ["No build errors"]
+        self.mode = "LIST"
+        self.status = "Build Errors: " + " | ".join(self.list_lines[:3])
+
     def _show_help(self) -> None:
         self.list_title = "Help"
         self.list_lines = [
             "i/a/o/O insert | Esc normal | : command",
             ":w save | :w file save as | :q quit | :wq save quit",
-            ":e file open | :goto line | :symbols | :diag | :set key value",
+            ":e file open | :open fuzzy | :tree | :recent | :goto line",
+            ":make build | :run last output | :errors | :symbols | :diag | :set key value",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
         ]
         self.mode = "LIST"
@@ -544,16 +702,21 @@ class EditorApp:
         self.col_offset = 0
         self._reload_file_context()
         self.status = f"Opened {path}"
+        self._remember_recent_file(path)
 
     def _apply_set_command(self, args: list[str]) -> None:
         key = args[0]
-        value = args[1]
+        value = " ".join(args[1:])
         auto_pair = self.config.auto_pair
         completion_key = self.config.completion_key
         indent_width = self.config.indent_width
         show_line_numbers = self.config.show_line_numbers
         scan_local_headers = self.config.scan_local_headers
         signature_help = self.config.signature_help
+        build_command = self.config.build_command
+        run_command = self.config.run_command
+        project_root_markers = self.config.project_root_markers
+        recent_files_limit = self.config.recent_files_limit
         if key == "auto_pair":
             auto_pair = value.lower() in ("on", "true", "1", "yes")
         elif key in ("completion_key", "complete"):
@@ -563,6 +726,24 @@ class EditorApp:
             completion_key = value
         elif key in ("number", "show_line_numbers"):
             show_line_numbers = value.lower() in ("on", "true", "1", "yes")
+        elif key == "build_command":
+            build_command = value
+        elif key == "run_command":
+            run_command = value
+        elif key == "recent_files_limit":
+            try:
+                recent_files_limit = int(value)
+            except ValueError:
+                self.status = f"Invalid recent_files_limit: {value}"
+                return
+            if not 1 <= recent_files_limit <= 200:
+                self.status = f"Invalid recent_files_limit: {value}"
+                return
+        elif key == "project_root_markers":
+            project_root_markers = tuple(item for item in value.split(",") if item)
+            if not project_root_markers:
+                self.status = "Invalid project_root_markers"
+                return
         else:
             self.status = f"Unknown setting: {key}"
             return
@@ -573,8 +754,13 @@ class EditorApp:
             show_line_numbers=show_line_numbers,
             scan_local_headers=scan_local_headers,
             signature_help=signature_help,
+            build_command=build_command,
+            run_command=run_command,
+            project_root_markers=project_root_markers,
+            recent_files_limit=recent_files_limit,
         )
         self._write_user_config()
+        self._reload_file_context()
         self.status = f"Set {key}={value}"
 
     def _write_user_config(self) -> None:
@@ -585,9 +771,24 @@ class EditorApp:
             "show_line_numbers": self.config.show_line_numbers,
             "scan_local_headers": self.config.scan_local_headers,
             "signature_help": self.config.signature_help,
+            "build_command": self.config.build_command,
+            "run_command": self.config.run_command,
+            "project_root_markers": list(self.config.project_root_markers),
+            "recent_files_limit": self.config.recent_files_limit,
         }
         self.user_config_path.parent.mkdir(parents=True, exist_ok=True)
         self.user_config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _remember_recent_file(self, path: Path) -> None:
+        if self.project_root is None:
+            return
+        RecentFilesStore(self.recent_store_path, self.config.recent_files_limit).add(path, self.project_root)
+
+    def _default_recent_store_path(self) -> Path:
+        if self.project_root is None:
+            return DEFAULT_CONFIG_PATH.parent / "recent" / "global.json"
+        digest = hashlib.sha1(str(self.project_root.resolve()).encode("utf-8")).hexdigest()[:16]
+        return DEFAULT_CONFIG_PATH.parent / "recent" / f"{digest}.json"
 
     def _current_word(self) -> str:
         line = self.buffer.current_line()
@@ -643,19 +844,40 @@ class EditorApp:
 
     def _goto_next_diagnostic(self, direction: int) -> bool:
         self._refresh_diagnostics()
-        if not self.diagnostics:
+        records = self._diagnostic_records()
+        if not records:
             self.status = "No diagnostics"
             return False
-        current = (self.buffer.cursor_row, self.buffer.cursor_col)
-        ordered = sorted(self.diagnostics, key=lambda item: (item.row, item.col))
+        current_path = self.path.resolve() if self.path else Path("[buffer]")
+        current = (current_path.as_posix(), self.buffer.cursor_row, self.buffer.cursor_col)
+        ordered = sorted(records, key=lambda item: (item[0].as_posix(), item[1], item[2]))
         if direction >= 0:
-            target = next((diag for diag in ordered if (diag.row, diag.col) > current), ordered[0])
+            target = next((item for item in ordered if (item[0].as_posix(), item[1], item[2]) > current), ordered[0])
         else:
-            target = next((diag for diag in reversed(ordered) if (diag.row, diag.col) < current), ordered[-1])
-        self.buffer.cursor_row = target.row
-        self.buffer.cursor_col = min(target.col, len(self.buffer.current_line()))
-        self.status = target.message
+            target = next((item for item in reversed(ordered) if (item[0].as_posix(), item[1], item[2]) < current), ordered[-1])
+        path, row, col, message = target
+        if path != current_path and path != Path("[buffer]"):
+            if self.buffer.dirty:
+                self.status = "Unsaved changes. Save before jumping to another file."
+                return False
+            self._open_file(path)
+        self.buffer.cursor_row = min(row, len(self.buffer.lines) - 1)
+        self.buffer.cursor_col = min(col, len(self.buffer.current_line()))
+        self.status = message
         return True
+
+    def _diagnostic_records(self) -> list[tuple[Path, int, int, str]]:
+        current_path = self.path.resolve() if self.path else Path("[buffer]")
+        records = [(current_path, item.row, item.col, item.message) for item in self.diagnostics]
+        for item in self.build_diagnostics:
+            records.append((self._resolve_build_path(item.path), item.row, item.col, item.message))
+        return records
+
+    def _resolve_build_path(self, path: Path) -> Path:
+        if path.is_absolute():
+            return path.resolve()
+        root = self.project_root or (self.path.parent if self.path else Path.cwd())
+        return (root / path).resolve()
 
     def _handle_completion_key(self, key) -> bool:
         if key in (curses.KEY_DOWN, "KEY_DOWN", CTRL_N, "\x0e"):

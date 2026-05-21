@@ -3,17 +3,23 @@ import unittest
 from pathlib import Path
 
 from sfe_core import (
+    BuildCommandResolver,
+    BuildOutputParser,
     CDiagnosticEngine,
     CompletionEngine,
     CProjectSymbol,
     HeaderIndex,
     HeaderScanner,
+    ProjectFileScanner,
     ProjectScanner,
+    RecentFilesStore,
     SignatureHelpEngine,
     SyntaxHighlighter,
     TextBuffer,
     UndoManager,
     VimCommandProcessor,
+    find_project_root,
+    fuzzy_match_files,
 )
 
 
@@ -403,6 +409,118 @@ class ProjectScannerTests(unittest.TestCase):
 
         self.assertIsNotNone(symbol)
         self.assertEqual(symbol.name, "target_value")
+
+
+class ProjectFileWorkflowTests(unittest.TestCase):
+    def test_find_project_root_walks_up_to_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "src" / "module"
+            nested.mkdir(parents=True)
+            (root / "Makefile").write_text("all:\n\tcc main.c\n", encoding="utf-8")
+
+            found = find_project_root(nested, ("Makefile", ".git", "compile_commands.json"))
+
+        self.assertEqual(found, root)
+
+    def test_project_file_scanner_ignores_generated_and_vcs_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for directory in ("src", ".git", ".worktrees", ".sfe", "build", "dist", "__pycache__"):
+                (root / directory).mkdir()
+            (root / "src" / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (root / "README.md").write_text("# demo\n", encoding="utf-8")
+            (root / ".sfe" / "recent.json").write_text('["src/main.c"]\n', encoding="utf-8")
+            (root / "build" / "main.c").write_text("ignored\n", encoding="utf-8")
+            (root / ".git" / "config").write_text("ignored\n", encoding="utf-8")
+
+            files = ProjectFileScanner().scan(root)
+
+        paths = [item.relative_path for item in files.files]
+        self.assertEqual(paths, ["README.md", "src/main.c"])
+
+    def test_project_scanners_do_not_ignore_project_inside_worktree_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / ".worktrees"
+            root = parent / "feature"
+            root.mkdir(parents=True)
+            (root / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text("ignored\n", encoding="utf-8")
+
+            symbols = ProjectScanner().scan(root).symbols
+            files = ProjectFileScanner().scan(root).files
+
+        self.assertEqual([symbol.name for symbol in symbols], ["main"])
+        self.assertEqual([file.relative_path for file in files], ["main.c"])
+
+    def test_fuzzy_match_files_prefers_filename_and_contiguous_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for relative in ("src/main.c", "tests/test_main.c", "src/memory/index.c"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+            files = ProjectFileScanner().scan(root)
+
+            matches = fuzzy_match_files("main", files.files)
+
+        self.assertEqual(matches[0].relative_path, "src/main.c")
+        self.assertEqual(matches[1].relative_path, "tests/test_main.c")
+
+    def test_recent_files_store_deduplicates_limits_and_persists_relative_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store_path = root / ".sfe" / "recent.json"
+            store = RecentFilesStore(store_path, limit=2)
+
+            store.add(root / "src" / "main.c", root)
+            store.add(root / "include" / "app.h", root)
+            store.add(root / "src" / "main.c", root)
+
+            reloaded = RecentFilesStore(store_path, limit=2)
+            entries = reloaded.load()
+
+        self.assertEqual(entries, ["src/main.c", "include/app.h"])
+
+    def test_build_output_parser_extracts_gcc_style_errors_and_warnings(self):
+        output = "\n".join(
+            [
+                "src/main.c:4:12: error: expected ';' before '}' token",
+                "include/app.h:2:1: warning: unused declaration",
+                "make: *** [Makefile:2: all] Error 1",
+            ]
+        )
+
+        diagnostics = BuildOutputParser().parse(output)
+
+        self.assertEqual(len(diagnostics), 2)
+        self.assertEqual(diagnostics[0].path, Path("src/main.c"))
+        self.assertEqual((diagnostics[0].row, diagnostics[0].col), (3, 11))
+        self.assertEqual(diagnostics[0].severity, "error")
+        self.assertIn("expected", diagnostics[0].message)
+        self.assertEqual(diagnostics[1].severity, "warning")
+
+    def test_build_command_resolver_prefers_config_makefile_then_gcc_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "src" / "hello.c"
+            source.parent.mkdir()
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+
+            configured = BuildCommandResolver.resolve("cc custom.c -o custom", source, root)
+            self.assertEqual(configured.command, "cc custom.c -o custom")
+            self.assertEqual(configured.run_command, "./custom")
+
+            (root / "Makefile").write_text("all:\n\tcc src/hello.c -o hello\n", encoding="utf-8")
+            make = BuildCommandResolver.resolve("", source, root)
+            self.assertEqual(make.command, "make")
+            self.assertEqual(make.run_command, "./hello")
+
+            (root / "Makefile").unlink()
+            fallback = BuildCommandResolver.resolve("", source, root)
+            self.assertEqual(fallback.command, "gcc src/hello.c -o hello")
+            self.assertEqual(fallback.run_command, "./hello")
 
 
 class CDiagnosticEngineTests(unittest.TestCase):

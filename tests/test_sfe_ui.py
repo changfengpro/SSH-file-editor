@@ -1,4 +1,5 @@
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -561,6 +562,150 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(app.config.completion_key, "ctrl-g")
             self.assertFalse(app.config.show_line_numbers)
             self.assertIn('"auto_pair": false', saved)
+
+    def test_command_set_updates_project_workflow_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+            app.user_config_path = config_path
+
+            app._execute_command("set build_command make debug")
+            app._execute_command("set run_command ./debug")
+            app._execute_command("set recent_files_limit 7")
+
+            saved = config_path.read_text(encoding="utf-8")
+            self.assertEqual(app.config.build_command, "make debug")
+            self.assertEqual(app.config.run_command, "./debug")
+            self.assertEqual(app.config.recent_files_limit, 7)
+            self.assertIn('"build_command": "make debug"', saved)
+
+    def test_command_tree_lists_project_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc src/main.c\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "src" / "main.c"))
+
+            app._execute_command("tree")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Project")
+        self.assertIn("src/main.c", "\n".join(app.list_lines))
+
+    def test_command_open_uses_fuzzy_match_to_open_best_project_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            current = root / "src" / "main.c"
+            target = root / "tests" / "test_main.c"
+            current.write_text("int current;\n", encoding="utf-8")
+            target.write_text("int target;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(current))
+
+            app._execute_command("open testmain")
+
+            self.assertEqual(app.path, target)
+            self.assertEqual(app.buffer.lines[0], "int target;")
+
+    def test_command_recent_lists_recent_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first), config=EditorConfig(recent_files_limit=5))
+            app.recent_store_path = root / ".sfe" / "recent.json"
+            app._remember_recent_file(first)
+            app._remember_recent_file(second)
+
+            app._execute_command("recent")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Recent")
+        self.assertEqual(app.list_lines[:2], ["two.c", "one.c"])
+
+    def test_recent_files_default_store_stays_outside_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+
+            app = EditorApp(stdscr=None, path=str(source))
+
+            self.assertNotEqual(app.recent_store_path.parent, root / ".sfe")
+            self.assertFalse((root / ".sfe").exists())
+
+    def test_command_make_runs_build_and_collects_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(build_command="make test"))
+            calls = []
+
+            def runner(command, cwd):
+                calls.append((command, cwd))
+                return subprocess.CompletedProcess(command, 2, stdout="", stderr="main.c:1:5: error: bad main\n")
+
+            app.build_runner = runner
+
+            app._execute_command("make")
+
+            self.assertEqual(calls, [("make test", root)])
+            self.assertEqual(len(app.build_diagnostics), 1)
+            self.assertIn("Build failed", app.status)
+
+    def test_command_run_uses_configured_run_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(run_command="./demo"))
+            calls = []
+
+            def runner(command, cwd):
+                calls.append((command, cwd))
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            app.build_runner = runner
+
+            app._execute_command("run")
+
+            self.assertEqual(calls, [("./demo", root)])
+            self.assertIn("Run OK", app.status)
+
+    def test_command_errors_lists_build_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            app._set_build_output("main.c:3:2: warning: check this\n", 0)
+
+            app._execute_command("errors")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertIn("main.c:3:2 warning: check this", "\n".join(app.list_lines))
+
+    def test_diagnostic_navigation_includes_build_errors_and_opens_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) {\nreturn 0;\n}\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            app._set_build_output("main.c:2:1: error: expected indent\n", 1)
+
+            self.assertTrue(app._goto_next_diagnostic(1))
+
+            self.assertEqual(app.path, source)
+            self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
+            self.assertIn("expected indent", app.status)
 
     def test_jump_to_definition_and_back_with_project_symbol(self):
         with tempfile.TemporaryDirectory() as tmp:
