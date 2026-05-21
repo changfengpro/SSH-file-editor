@@ -296,6 +296,39 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.lines, ["{"])
         self.assertEqual(app.buffer.cursor_col, 1)
 
+    def test_insert_mode_closing_brace_aligns_to_block_indent(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(indent_width=4))
+        app.mode = "INSERT"
+        app.buffer.lines = ["if (ok) {", "    "]
+        app.buffer.cursor_row = 1
+        app.buffer.cursor_col = 4
+
+        app._handle_insert_key("}")
+
+        self.assertEqual(app.buffer.lines, ["if (ok) {", "}"])
+        self.assertEqual(app.buffer.cursor_col, 1)
+
+    def test_insert_mode_backspace_removes_empty_pair(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+
+        app._handle_insert_key("{")
+        app._handle_insert_key("\b")
+
+        self.assertEqual(app.buffer.lines, [""])
+        self.assertEqual(app.buffer.cursor_col, 0)
+
+    def test_insert_mode_backspace_on_empty_indent_removes_one_level(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(indent_width=4))
+        app.mode = "INSERT"
+        app.buffer.lines = ["        value = 1;"]
+        app.buffer.cursor_col = 8
+
+        app._handle_insert_key("\b")
+
+        self.assertEqual(app.buffer.lines, ["    value = 1;"])
+        self.assertEqual(app.buffer.cursor_col, 4)
+
 
 class EditorLayoutTests(unittest.TestCase):
     def setUp(self):
@@ -387,6 +420,35 @@ class EditorNormalModeTests(unittest.TestCase):
         app._handle_normal_key("\x12")
 
         self.assertEqual(app.buffer.lines, ["a"])
+
+    def test_normal_mode_repeats_search_forward_and_backward(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["alpha", "beta alpha", "gamma alpha"]
+
+        self.assertTrue(app._search_for("alpha"))
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 0))
+
+        app._handle_normal_key("n")
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 5))
+
+        app._handle_normal_key("N")
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 0))
+
+    def test_normal_mode_repeat_search_wraps_around(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["alpha", "beta", "alpha"]
+
+        self.assertTrue(app._search_for("alpha"))
+        app._handle_normal_key("N")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 0))
+
+    def test_normal_mode_repeat_search_without_query_updates_status(self):
+        app = EditorApp(stdscr=None, path=None)
+
+        app._handle_normal_key("n")
+
+        self.assertEqual(app.status, "No previous search")
 
 
 class DisplayWidthTests(unittest.TestCase):

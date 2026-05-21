@@ -10,6 +10,7 @@ NUMBER_RE = re.compile(r"\b(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)\b")
 FUNCTION_DECL_RE = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_\s\*]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;{}]*)\)\s*;"
 )
+PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
 
 
 class TextBuffer:
@@ -102,11 +103,13 @@ class TextBuffer:
         line = self.current_line()
         before = line[: self.cursor_col]
         leading = re.match(r"\s*", before).group(0)
-        extra = " " * indent_width if before.rstrip().endswith("{") else ""
+        stripped_before = before.rstrip()
+        opener = stripped_before[-1:] if stripped_before else ""
+        extra = " " * indent_width if opener in PAIRS else ""
         indent = leading + extra
         after = line[self.cursor_col :]
         self.lines[self.cursor_row] = before
-        if before.rstrip().endswith("{") and after.lstrip().startswith("}"):
+        if opener in PAIRS and after.lstrip().startswith(PAIRS[opener]):
             self.lines.insert(self.cursor_row + 1, indent)
             self.lines.insert(self.cursor_row + 2, leading + after.lstrip())
         else:
@@ -114,6 +117,38 @@ class TextBuffer:
         self.cursor_row += 1
         self.cursor_col = len(indent)
         self.dirty = True
+
+    def backspace_smart(self, indent_width: int = 4) -> bool:
+        if self.cursor_col <= 0:
+            return False
+        line = self.current_line()
+        before = line[: self.cursor_col]
+        after = line[self.cursor_col :]
+        if before[-1:] in PAIRS and after.startswith(PAIRS[before[-1]]):
+            self.lines[self.cursor_row] = before[:-1] + after[1:]
+            self.cursor_col -= 1
+            self.dirty = True
+            return True
+        if before.strip() == "" and len(before) >= indent_width and len(before) % indent_width == 0:
+            self.lines[self.cursor_row] = before[:-indent_width] + after
+            self.cursor_col -= indent_width
+            self.dirty = True
+            return True
+        return False
+
+    def align_closing_brace(self, indent_width: int = 4) -> bool:
+        line = self.current_line()
+        stripped = line.strip()
+        if stripped != "}":
+            return False
+        leading = re.match(r"\s*", line).group(0)
+        if len(leading) < indent_width:
+            return False
+        new_leading = leading[:-indent_width]
+        self.lines[self.cursor_row] = new_leading + stripped
+        self.cursor_col = min(len(new_leading) + 1, len(self.current_line()))
+        self.dirty = True
+        return True
 
     def backspace(self) -> None:
         if self.cursor_col > 0:

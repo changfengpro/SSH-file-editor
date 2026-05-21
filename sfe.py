@@ -129,6 +129,7 @@ class EditorApp:
         self.quit_warning = False
         self.undo = UndoManager()
         self.auto_pair_placeholders: list[tuple[int, int, str]] = []
+        self.last_search_query = ""
 
     def run(self) -> None:
         curses.curs_set(1)
@@ -275,6 +276,10 @@ class EditorApp:
                 self.status = "Redo"
             else:
                 self.status = "Already at newest change"
+        elif key == "n":
+            self._repeat_search(1)
+        elif key == "N":
+            self._repeat_search(-1)
         elif key in (CTRL_F, "\x06", "/"):
             self._search()
         elif key in (CTRL_S, "\x13", CTRL_O, "\x0f") or is_function_key(key, 2):
@@ -330,7 +335,8 @@ class EditorApp:
             self._drop_stale_placeholders()
         elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
             self._record_edit()
-            self.buffer.backspace()
+            if not self.buffer.backspace_smart(self.config.indent_width):
+                self.buffer.backspace()
             self._clear_placeholders()
         elif key in (curses.KEY_DC, "KEY_DC"):
             self._record_edit()
@@ -358,6 +364,9 @@ class EditorApp:
             self._record_edit()
             self.buffer.insert(key)
             self._shift_placeholders_after_edit(1)
+            if key == "}":
+                self.buffer.align_closing_brace(self.config.indent_width)
+                self._clear_placeholders()
             self.quit_warning = False
             if re_match_completion_char(key):
                 self._open_completions(show_status=False)
@@ -491,14 +500,44 @@ class EditorApp:
         query = self._prompt("Search: ")
         if not query:
             return
-        for index, line in enumerate(self.buffer.lines):
-            found = line.find(query)
-            if found != -1:
-                self.buffer.cursor_row = index
-                self.buffer.cursor_col = found
-                self.status = f"Found {query!r}"
-                return
-        self.status = f"Not found: {query}"
+        self._search_for(query)
+
+    def _search_for(self, query: str, *, start_after_cursor: bool = False, direction: int = 1) -> bool:
+        if not query:
+            return False
+        self.last_search_query = query
+        match = self._find_match(query, start_after_cursor=start_after_cursor, direction=direction)
+        if match is None:
+            self.status = f"Not found: {query}"
+            return False
+        self.buffer.cursor_row, self.buffer.cursor_col = match
+        self.status = f"Found {query!r}"
+        return True
+
+    def _repeat_search(self, direction: int) -> bool:
+        if not self.last_search_query:
+            self.status = "No previous search"
+            return False
+        return self._search_for(self.last_search_query, start_after_cursor=True, direction=direction)
+
+    def _find_match(self, query: str, *, start_after_cursor: bool, direction: int) -> tuple[int, int] | None:
+        matches = [
+            (row, col)
+            for row, line in enumerate(self.buffer.lines)
+            for col in all_occurrences(line, query)
+        ]
+        if not matches:
+            return None
+        current = (self.buffer.cursor_row, self.buffer.cursor_col)
+        if direction >= 0:
+            for match in matches:
+                if not start_after_cursor or match > current:
+                    return match
+            return matches[0]
+        for match in reversed(matches):
+            if not start_after_cursor or match < current:
+                return match
+        return matches[-1]
 
     def _prompt(self, label: str) -> str:
         curses.echo()
@@ -646,6 +685,19 @@ def display_width(text: str) -> int:
             continue
         width += 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
     return width
+
+
+def all_occurrences(text: str, query: str) -> list[int]:
+    if not query:
+        return []
+    positions: list[int] = []
+    start = 0
+    while True:
+        found = text.find(query, start)
+        if found == -1:
+            return positions
+        positions.append(found)
+        start = found + max(1, len(query))
 
 
 def normalize_key_name(name: str) -> str:

@@ -80,6 +80,24 @@ class TextBufferTests(unittest.TestCase):
         self.assertEqual(buf.lines, ["    if (ok) {", "        ", "    }"])
         self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 8))
 
+    def test_newline_between_parentheses_pair_aligns_closer_with_opener(self):
+        buf = TextBuffer(["    call()"])
+        buf.cursor_col = len("    call(")
+
+        buf.newline_with_indent(indent_width=4)
+
+        self.assertEqual(buf.lines, ["    call(", "        ", "    )"])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 8))
+
+    def test_newline_between_brackets_pair_aligns_closer_with_opener(self):
+        buf = TextBuffer(["    items[]"])
+        buf.cursor_col = len("    items[")
+
+        buf.newline_with_indent(indent_width=2)
+
+        self.assertEqual(buf.lines, ["    items[", "      ", "    ]"])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 6))
+
     def test_newline_preserves_indent_without_open_brace(self):
         buf = TextBuffer(["    return value;"])
         buf.cursor_col = len(buf.current_line())
@@ -88,6 +106,43 @@ class TextBufferTests(unittest.TestCase):
 
         self.assertEqual(buf.lines, ["    return value;", "    "])
         self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 4))
+
+    def test_smart_backspace_on_empty_indent_removes_one_indent_level(self):
+        buf = TextBuffer(["        value = 1;"])
+        buf.cursor_col = 8
+
+        self.assertTrue(buf.backspace_smart(indent_width=4))
+
+        self.assertEqual(buf.lines, ["    value = 1;"])
+        self.assertEqual(buf.cursor_col, 4)
+
+    def test_smart_backspace_between_empty_pair_removes_pair(self):
+        for line in ["{}", "()", "[]", '""', "''"]:
+            with self.subTest(line=line):
+                buf = TextBuffer([line])
+                buf.cursor_col = 1
+
+                self.assertTrue(buf.backspace_smart(indent_width=4))
+
+                self.assertEqual(buf.lines, [""])
+                self.assertEqual(buf.cursor_col, 0)
+
+    def test_smart_backspace_returns_false_when_no_smart_case_matches(self):
+        buf = TextBuffer(["abc"])
+        buf.cursor_col = 3
+
+        self.assertFalse(buf.backspace_smart(indent_width=4))
+        self.assertEqual(buf.lines, ["abc"])
+        self.assertEqual(buf.cursor_col, 3)
+
+    def test_align_closing_brace_dedents_current_indent(self):
+        buf = TextBuffer(["    }"])
+        buf.cursor_col = 5
+
+        self.assertTrue(buf.align_closing_brace(indent_width=4))
+
+        self.assertEqual(buf.lines, ["}"])
+        self.assertEqual(buf.cursor_col, 1)
 
 
 class UndoManagerTests(unittest.TestCase):

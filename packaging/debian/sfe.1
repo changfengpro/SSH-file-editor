@@ -15,6 +15,10 @@ When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
 right side again jumps over the placeholder instead of inserting a duplicate.
+.PP
+Insert-mode Backspace removes an empty pair such as {} in one step and removes
+one indentation level on otherwise empty indentation. Typing } on an indented
+blank line aligns it with the containing block.
 .SH COMMANDS
 .TP
 .B i
@@ -40,6 +44,12 @@ Undo the last edit in Normal mode.
 .TP
 .B Ctrl-R
 Redo the last undone edit in Normal mode.
+.TP
+.B n
+Repeat the last search forward.
+.TP
+.B N
+Repeat the last search backward.
 .SH CONFIGURATION
 User configuration is read from
 .B ~/.config/sfe/config.json
