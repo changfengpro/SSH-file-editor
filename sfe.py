@@ -1143,7 +1143,7 @@ class EditorApp:
         height, width = self.stdscr.getmaxyx()
         self.stdscr.move(height - 1, 0)
         self.stdscr.clrtoeol()
-        self.stdscr.addnstr(height - 1, 0, label, max(0, width - 1))
+        self._safe_addnstr(height - 1, 0, label, max(0, width - 1))
         self.stdscr.refresh()
         try:
             raw = self.stdscr.getstr(height - 1, len(label), max(1, width - len(label) - 1))
@@ -1169,14 +1169,14 @@ class EditorApp:
             self._draw_tree(text_height, tree_width)
             if tree_width < width:
                 for row in range(text_height):
-                    self.stdscr.addnstr(row, tree_width, "|", 1, curses.A_DIM)
+                    self._safe_addnstr(row, tree_width, "|", 1, curses.A_DIM)
         for screen_row in range(text_height):
             file_row = self.row_offset + screen_row
             if file_row >= len(self.buffer.lines):
                 break
             if gutter_width:
                 line_no = f"{file_row + 1:>{gutter_width - 1}} "
-                self.stdscr.addnstr(screen_row, editor_x, line_no, gutter_width, curses.A_DIM)
+                self._safe_addnstr(screen_row, editor_x, line_no, gutter_width, curses.A_DIM)
             self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], editor_width, editor_x)
         self._draw_completions(text_height, editor_width, gutter_width, editor_x)
         self._draw_status(height, width)
@@ -1191,21 +1191,21 @@ class EditorApp:
 
     def _draw_list(self, text_height: int, width: int) -> None:
         title = f" {self.list_title} "
-        self.stdscr.addnstr(0, 0, title.ljust(width), width - 1, curses.A_REVERSE)
+        self._safe_addnstr(0, 0, title.ljust(width), width - 1, curses.A_REVERSE)
         for index, line in enumerate(self.list_lines[: max(0, text_height - 1)], start=1):
-            self.stdscr.addnstr(index, 0, line, width - 1)
+            self._safe_addnstr(index, 0, line, width - 1)
 
     def _draw_tree(self, text_height: int, width: int) -> None:
         title = " Project "
         attr = curses.A_REVERSE if self.tree_focused else curses.A_DIM
-        self.stdscr.addnstr(0, 0, title.ljust(width), max(0, width - 1), attr)
+        self._safe_addnstr(0, 0, title.ljust(width), max(0, width - 1), attr)
         visible_rows = max(0, text_height - 1)
         if self.tree_cursor < self.tree_row_offset:
             self.tree_row_offset = self.tree_cursor
         elif self.tree_cursor >= self.tree_row_offset + visible_rows:
             self.tree_row_offset = max(0, self.tree_cursor - visible_rows + 1)
         if not self.tree_entries:
-            self.stdscr.addnstr(1, 0, " No project files", max(0, width - 1), curses.A_DIM)
+            self._safe_addnstr(1, 0, " No project files", max(0, width - 1), curses.A_DIM)
             return
         for screen_offset, entry in enumerate(self.tree_entries[self.tree_row_offset : self.tree_row_offset + visible_rows], start=1):
             entry_index = self.tree_row_offset + screen_offset - 1
@@ -1215,24 +1215,41 @@ class EditorApp:
                 marker = " "
             line = f" {marker} {entry.display}"
             row_attr = curses.A_REVERSE if self.tree_focused and entry_index == self.tree_cursor else curses.A_NORMAL
-            self.stdscr.addnstr(screen_offset, 0, line.ljust(width), max(0, width - 1), row_attr)
+            self._safe_addnstr(screen_offset, 0, line.ljust(width), max(0, width - 1), row_attr)
 
     def _draw_status(self, height: int, width: int) -> None:
         name = str(self.path) if self.path else "[No Name]"
         dirty = " +" if self.buffer.dirty else ""
         mode = "TREE" if self.tree_visible and self.tree_focused else self.mode
         left = f" {mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
-        self.stdscr.addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
+        self._safe_addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line
         else:
             bottom = self._signature_help_text() or self.status
-        self.stdscr.addnstr(height - 1, 0, bottom.ljust(width), width - 1)
+        self._safe_addnstr(height - 1, 0, bottom.ljust(width), width - 1)
 
     def _signature_help_text(self) -> str:
         if self.mode != "INSERT" or not self.config.signature_help:
             return ""
         return self.signature_help.signature_for(self.buffer.current_line(), self.buffer.cursor_col)
+
+    def _safe_addnstr(self, row: int, col: int, text: str, max_width: int, attr: int = 0) -> None:
+        if not text or max_width <= 0:
+            return
+        height, width = self.stdscr.getmaxyx()
+        if row < 0 or row >= height or col < 0 or col >= width:
+            return
+        available = max(0, width - col - 1)
+        if available <= 0:
+            return
+        clipped = clip_display_width(text, min(max_width, available))
+        if not clipped:
+            return
+        try:
+            self.stdscr.addnstr(row, col, clipped, len(clipped), attr)
+        except curses.error:
+            return
 
     def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int, x_offset: int = 0) -> None:
         visible_start = self.col_offset
@@ -1247,7 +1264,7 @@ class EditorApp:
             start = max(visible_start, token_start)
             end = min(visible_end, token_end)
             text = token_text[start - token_start : end - token_start]
-            self.stdscr.addnstr(screen_row, x, text, max(0, x_offset + width - x - 1), attr)
+            self._safe_addnstr(screen_row, x, text, max(0, x_offset + width - x - 1), attr)
             x += display_width(text)
 
     def _line_segments_with_attrs(self, screen_row: int, line: str) -> list[tuple[int, str, int]]:
@@ -1284,7 +1301,7 @@ class EditorApp:
             attr = curses.A_REVERSE if offset == self.completion_index else curses.A_NORMAL
             source = item.source or item.kind
             label = f" {item.text:<18} {item.kind:<8} {source:<8} {item.detail:<22}"
-            self.stdscr.addnstr(start_y + offset, start_x, label, min(len(label), x_offset + width - start_x - 1), attr)
+            self._safe_addnstr(start_y + offset, start_x, label, min(len(label), x_offset + width - start_x - 1), attr)
 
     def _scroll_to_cursor(self) -> None:
         height, width = self.stdscr.getmaxyx()
@@ -1352,6 +1369,20 @@ def display_width(text: str) -> int:
             continue
         width += 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
     return width
+
+
+def clip_display_width(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    used = 0
+    chars: list[str] = []
+    for char in text:
+        char_width = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+        if used + char_width > max_width:
+            break
+        chars.append(char)
+        used += char_width
+    return "".join(chars)
 
 
 def all_occurrences(text: str, query: str) -> list[int]:

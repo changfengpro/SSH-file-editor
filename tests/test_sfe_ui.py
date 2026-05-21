@@ -61,6 +61,27 @@ class FakeDrawScreen:
         self.calls.append(("refresh",))
 
 
+class BoundsCheckingDrawScreen(FakeDrawScreen):
+    def __init__(self, height=20, width=24):
+        super().__init__()
+        self.height = height
+        self.width = width
+
+    def addnstr(self, row, col, text, max_width, attr=0):
+        if row < 0 or row >= self.height or col < 0 or col >= self.width:
+            raise FakeCurses.error("addnwstr() returned ERR")
+        if max_width <= 0:
+            raise FakeCurses.error("addnwstr() returned ERR")
+        if col + max_width >= self.width:
+            raise FakeCurses.error("addnwstr() returned ERR")
+        if display_width(text[:max_width]) > self.width - col:
+            raise FakeCurses.error("addnwstr() returned ERR")
+        super().addnstr(row, col, text, max_width, attr)
+
+    def getmaxyx(self):
+        return (self.height, self.width)
+
+
 class EditorInsertModeTests(unittest.TestCase):
     def setUp(self):
         self.original_curses = sfe.curses
@@ -451,6 +472,37 @@ class EditorLayoutTests(unittest.TestCase):
 
         self.assertIn(("(", 0), [(call[2], call[3]) for call in screen.calls])
         self.assertIn((")", FakeCurses.A_DIM), [(call[2], call[3]) for call in screen.calls])
+
+    def test_draw_code_line_clips_at_curses_boundary(self):
+        screen = BoundsCheckingDrawScreen(height=6, width=12)
+        app = EditorApp(stdscr=screen, path=None, config=EditorConfig(show_line_numbers=False))
+        app.syntax_attrs = dict(self.original_colors)
+
+        app._draw_code_line(0, 0, "int value = 12345;", 12, 0)
+
+        drawn = "".join(call[2] for call in screen.calls if len(call) == 4)
+        self.assertIn("int", drawn)
+
+    def test_safe_draw_ignores_curses_boundary_errors(self):
+        screen = BoundsCheckingDrawScreen(height=4, width=10)
+        app = EditorApp(stdscr=screen, path=None)
+
+        app._safe_addnstr(0, 9, "x", 1)
+
+        self.assertEqual(screen.calls, [])
+
+    def test_draw_with_tree_does_not_crash_on_narrow_editor_pane(self):
+        screen = BoundsCheckingDrawScreen(height=8, width=28)
+        app = EditorApp(stdscr=screen, path=None)
+        app.syntax_attrs = dict(self.original_colors)
+        app.tree_visible = True
+        app.tree_focused = False
+        app.buffer.lines = ["int value = 12345678901234567890;"]
+
+        app._draw()
+
+        drawn = "".join(call[2] for call in screen.calls if len(call) == 4)
+        self.assertIn("Project", drawn)
 
 
 class EditorNormalModeTests(unittest.TestCase):
