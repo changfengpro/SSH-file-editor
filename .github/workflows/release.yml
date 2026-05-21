@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag
+        run: git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Check existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        if: steps.existing.outputs.exists == 'false'
+        run: python3 -m unittest discover -s tests
+
+      - name: Compile check
+        if: steps.existing.outputs.exists == 'false'
+        run: python3 -m py_compile sfe.py sfe_core.py scripts/build_deb.py
+
+      - name: Build package
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          python3 scripts/build_deb.py --root .
+          cp "dist/sfe_${{ steps.version.outputs.version }}_all.deb" dist/sfe_latest_all.deb
+          sha256sum "dist/sfe_${{ steps.version.outputs.version }}_all.deb" dist/sfe_latest_all.deb
+
+      - name: Create release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Changes
+          - Add a toggleable left project tree pane.
+          - Keep the tree collapsed by default and let Enter expand/collapse directories.
+          - Open selected files in the editor pane and switch focus with Ctrl-W.
+          - Update README and man page for the new tree workflow.
+
+          ## Verification
+          - python3 -m unittest discover -s tests
+          - python3 -m py_compile sfe.py sfe_core.py scripts/build_deb.py
+          EOF
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/sfe_${{ steps.version.outputs.version }}_all.deb" \
+            "dist/sfe_latest_all.deb" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md
