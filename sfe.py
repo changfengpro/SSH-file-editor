@@ -10,9 +10,12 @@ import unicodedata
 from pathlib import Path
 
 from sfe_core import (
+    CDiagnosticEngine,
     CompletionEngine,
     HeaderIndex,
     HeaderScanner,
+    ProjectIndex,
+    ProjectScanner,
     SignatureHelpEngine,
     SyntaxHighlighter,
     TextBuffer,
@@ -123,12 +126,16 @@ class EditorApp:
     def __init__(self, stdscr, path: str | None, config: EditorConfig | None = None):
         self.stdscr = stdscr
         self.path = Path(path) if path else None
+        self.user_config_path = DEFAULT_CONFIG_PATH
         self.config = config if config is not None else EditorConfig()
         self.buffer = self._load_buffer(self.path)
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
         self.highlighter = SyntaxHighlighter()
         self.header_index = self._load_header_index()
+        self.project_index = self._load_project_index()
+        self.diagnostic_engine = CDiagnosticEngine()
+        self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
         self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
         self.row_offset = 0
         self.col_offset = 0
@@ -141,6 +148,9 @@ class EditorApp:
         self.undo = UndoManager()
         self.auto_pair_placeholders: list[tuple[int, int, str]] = []
         self.last_search_query = ""
+        self.list_title = ""
+        self.list_lines: list[str] = []
+        self.jump_stack: list[tuple[Path | None, int, int]] = []
 
     def run(self) -> None:
         curses.curs_set(1)
@@ -186,7 +196,23 @@ class EditorApp:
             return HeaderIndex(set(), [])
         return HeaderScanner().scan(self.path.parent)
 
-    def _save(self) -> None:
+    def _load_project_index(self) -> ProjectIndex | None:
+        if self.path is None:
+            return None
+        return ProjectScanner().scan(self.path.parent)
+
+    def _reload_file_context(self) -> None:
+        self.header_index = self._load_header_index()
+        self.project_index = self._load_project_index()
+        self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
+        self._refresh_diagnostics()
+
+    def _refresh_diagnostics(self) -> None:
+        self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
+
+    def _save(self, path: Path | None = None) -> None:
+        if path is not None:
+            self.path = path
         if not self.path:
             self.status = "No filename. Start with: sfe <file>"
             return
@@ -194,10 +220,13 @@ class EditorApp:
         self.path.write_text(self.buffer.to_text(), encoding="utf-8")
         self.buffer.dirty = False
         self.status = f"Saved {self.path}"
+        self._reload_file_context()
 
     def _handle_key(self, key) -> bool:
         if self.mode == "COMMAND":
             return self._handle_command_key(key)
+        if self.mode == "LIST":
+            return self._handle_list_key(key)
         if self.mode == "NORMAL":
             return self._handle_normal_key(key)
         return self._handle_insert_key(key)
@@ -291,15 +320,30 @@ class EditorApp:
             self._repeat_search(1)
         elif key == "N":
             self._repeat_search(-1)
+        elif key in (CTRL_N, "\x0e"):
+            self._goto_next_diagnostic(1)
+        elif key in (CTRL_P, "\x10"):
+            self._goto_next_diagnostic(-1)
         elif key in (CTRL_F, "\x06", "/"):
             self._search()
+        elif key == "\x1d":
+            self._jump_to_definition()
         elif key in (CTRL_S, "\x13", CTRL_O, "\x0f") or is_function_key(key, 2):
-            self._save()
+            if key in (CTRL_O, "\x0f"):
+                self._jump_back()
+            else:
+                self._save()
         elif key in (CTRL_Q, "\x11") or is_function_key(key, 10):
             if self.buffer.dirty:
                 self.status = "E37: No write since last change (:q! overrides)"
                 return False
             return True
+        return False
+
+    def _handle_list_key(self, key) -> bool:
+        if key in (ESCAPE, "\x1b", "q"):
+            self.mode = "NORMAL"
+            return False
         return False
 
     def _handle_insert_key(self, key) -> bool:
@@ -359,6 +403,7 @@ class EditorApp:
             self._record_edit()
             self.buffer.newline_with_indent(self.config.indent_width)
             self._clear_placeholders()
+            self._refresh_diagnostics()
         elif self.config.auto_pair and isinstance(key, str) and key in PAIR_CLOSERS and self._jump_over_pair_placeholder(key):
             self.quit_warning = False
         elif self.config.auto_pair and isinstance(key, str) and key in PAIRS:
@@ -379,6 +424,7 @@ class EditorApp:
                 self.buffer.align_closing_brace(self.config.indent_width)
                 self._clear_placeholders()
             self.quit_warning = False
+            self._refresh_diagnostics()
             if re_match_completion_char(key):
                 self._open_completions(show_status=False)
         return False
@@ -401,6 +447,8 @@ class EditorApp:
         return False
 
     def _execute_command(self, command: str) -> bool:
+        if self._execute_extended_command(command):
+            return False
         result = self.commands.execute(command, self.buffer.dirty)
         if result.save:
             self._save()
@@ -409,6 +457,205 @@ class EditorApp:
         if result.quit:
             return True
         return False
+
+    def _execute_extended_command(self, command: str) -> bool:
+        command = command.strip()
+        if command.startswith(":"):
+            command = command[1:].strip()
+        if not command:
+            return False
+        parts = command.split()
+        name = parts[0]
+        args = parts[1:]
+        if name in ("goto", "go") and args:
+            return self._command_goto(args[0])
+        if name in ("symbols", "symbol"):
+            self._show_symbols()
+            return True
+        if name in ("diag", "diagnostics"):
+            self._show_diagnostics()
+            return True
+        if name in ("help", "h"):
+            self._show_help()
+            return True
+        if name in ("e", "edit") and args:
+            self._open_file(Path(" ".join(args)).expanduser())
+            return True
+        if name in ("w", "write") and args:
+            self._save(Path(" ".join(args)).expanduser())
+            return True
+        if name == "set" and len(args) >= 2:
+            self._apply_set_command(args)
+            return True
+        return False
+
+    def _command_goto(self, value: str) -> bool:
+        try:
+            line_no = int(value)
+        except ValueError:
+            self.status = f"Invalid line: {value}"
+            return True
+        line_no = max(1, min(line_no, len(self.buffer.lines)))
+        self.buffer.cursor_row = line_no - 1
+        self.buffer.cursor_col = min(self.buffer.cursor_col, len(self.buffer.current_line()))
+        self.status = f"Moved to line {line_no}"
+        return True
+
+    def _show_symbols(self) -> None:
+        index = ProjectScanner()._scan_file(self.path or Path("[buffer]"), self.buffer.lines)
+        self.list_title = "Symbols"
+        self.list_lines = [f"{symbol.row + 1}: {symbol.kind:<8} {symbol.name}" for symbol in index]
+        if not self.list_lines:
+            self.list_lines = ["No symbols"]
+        self.mode = "LIST"
+        self.status = "Symbols: " + " | ".join(self.list_lines[:3])
+
+    def _show_diagnostics(self) -> None:
+        self._refresh_diagnostics()
+        self.list_title = "Diagnostics"
+        self.list_lines = [
+            f"{diag.row + 1}:{diag.col + 1} {diag.severity}: {diag.message}"
+            for diag in self.diagnostics
+        ]
+        if not self.list_lines:
+            self.list_lines = ["No diagnostics"]
+        self.mode = "LIST"
+        self.status = "Diagnostics: " + " | ".join(self.list_lines[:3])
+
+    def _show_help(self) -> None:
+        self.list_title = "Help"
+        self.list_lines = [
+            "i/a/o/O insert | Esc normal | : command",
+            ":w save | :w file save as | :q quit | :wq save quit",
+            ":e file open | :goto line | :symbols | :diag | :set key value",
+            "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
+        ]
+        self.mode = "LIST"
+        self.status = "Help"
+
+    def _open_file(self, path: Path) -> None:
+        if self.buffer.dirty:
+            self.status = "Unsaved changes. Save or :q! before :e."
+            return
+        self.path = path
+        self.buffer = self._load_buffer(path)
+        self.undo = UndoManager()
+        self.row_offset = 0
+        self.col_offset = 0
+        self._reload_file_context()
+        self.status = f"Opened {path}"
+
+    def _apply_set_command(self, args: list[str]) -> None:
+        key = args[0]
+        value = args[1]
+        auto_pair = self.config.auto_pair
+        completion_key = self.config.completion_key
+        indent_width = self.config.indent_width
+        show_line_numbers = self.config.show_line_numbers
+        scan_local_headers = self.config.scan_local_headers
+        signature_help = self.config.signature_help
+        if key == "auto_pair":
+            auto_pair = value.lower() in ("on", "true", "1", "yes")
+        elif key in ("completion_key", "complete"):
+            if not normalize_key_name(value):
+                self.status = f"Invalid completion key: {value}"
+                return
+            completion_key = value
+        elif key in ("number", "show_line_numbers"):
+            show_line_numbers = value.lower() in ("on", "true", "1", "yes")
+        else:
+            self.status = f"Unknown setting: {key}"
+            return
+        self.config = EditorConfig(
+            auto_pair=auto_pair,
+            completion_key=completion_key,
+            indent_width=indent_width,
+            show_line_numbers=show_line_numbers,
+            scan_local_headers=scan_local_headers,
+            signature_help=signature_help,
+        )
+        self._write_user_config()
+        self.status = f"Set {key}={value}"
+
+    def _write_user_config(self) -> None:
+        data = {
+            "auto_pair": self.config.auto_pair,
+            "completion_key": self.config.completion_key,
+            "indent_width": self.config.indent_width,
+            "show_line_numbers": self.config.show_line_numbers,
+            "scan_local_headers": self.config.scan_local_headers,
+            "signature_help": self.config.signature_help,
+        }
+        self.user_config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.user_config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _current_word(self) -> str:
+        line = self.buffer.current_line()
+        if not line:
+            return ""
+        col = min(self.buffer.cursor_col, len(line) - 1)
+        if col > 0 and not re_match_completion_char(line[col]) and re_match_completion_char(line[col - 1]):
+            col -= 1
+        if not re_match_completion_char(line[col]):
+            return ""
+        start = col
+        end = col + 1
+        while start > 0 and re_match_completion_char(line[start - 1]):
+            start -= 1
+        while end < len(line) and re_match_completion_char(line[end]):
+            end += 1
+        return line[start:end]
+
+    def _jump_to_definition(self) -> bool:
+        word = self._current_word()
+        if not word or self.project_index is None:
+            self.status = "No symbol under cursor"
+            return False
+        symbol = self.project_index.find_definition(word)
+        if symbol is None:
+            self.status = f"Definition not found: {word}"
+            return False
+        self.jump_stack.append((self.path, self.buffer.cursor_row, self.buffer.cursor_col))
+        if self.path != symbol.path:
+            if self.buffer.dirty:
+                self.status = "Unsaved changes. Save before jumping to another file."
+                return False
+            self._open_file(symbol.path)
+        self.buffer.cursor_row = min(symbol.row, len(self.buffer.lines) - 1)
+        self.buffer.cursor_col = min(symbol.col, len(self.buffer.current_line()))
+        self.status = f"Definition: {symbol.name}"
+        return True
+
+    def _jump_back(self) -> bool:
+        if not self.jump_stack:
+            self.status = "Jump stack empty"
+            return False
+        path, row, col = self.jump_stack.pop()
+        if path is not None and path != self.path:
+            if self.buffer.dirty:
+                self.status = "Unsaved changes. Save before jumping back."
+                return False
+            self._open_file(path)
+        self.buffer.cursor_row = min(row, len(self.buffer.lines) - 1)
+        self.buffer.cursor_col = min(col, len(self.buffer.current_line()))
+        self.status = "Jumped back"
+        return True
+
+    def _goto_next_diagnostic(self, direction: int) -> bool:
+        self._refresh_diagnostics()
+        if not self.diagnostics:
+            self.status = "No diagnostics"
+            return False
+        current = (self.buffer.cursor_row, self.buffer.cursor_col)
+        ordered = sorted(self.diagnostics, key=lambda item: (item.row, item.col))
+        if direction >= 0:
+            target = next((diag for diag in ordered if (diag.row, diag.col) > current), ordered[0])
+        else:
+            target = next((diag for diag in reversed(ordered) if (diag.row, diag.col) < current), ordered[-1])
+        self.buffer.cursor_row = target.row
+        self.buffer.cursor_col = min(target.col, len(self.buffer.current_line()))
+        self.status = target.message
+        return True
 
     def _handle_completion_key(self, key) -> bool:
         if key in (curses.KEY_DOWN, "KEY_DOWN", CTRL_N, "\x0e"):
@@ -433,6 +680,7 @@ class EditorApp:
             self.buffer.cursor_row,
             self.buffer.cursor_col,
             header_index=self.header_index,
+            project_index=self.project_index,
         )
         self.completion_index = 0
         if not self.completions and show_status:
@@ -453,8 +701,13 @@ class EditorApp:
         item = self.completions[self.completion_index]
         old_prefix_len = len(self.buffer.current_prefix())
         self._record_edit()
-        self.buffer.replace_current_prefix(item.text)
-        self._shift_placeholders_after_edit(len(item.text) - old_prefix_len)
+        if item.insert_text:
+            self.buffer.replace_current_prefix_with_snippet(item.insert_text)
+            self._clear_placeholders()
+        else:
+            self.buffer.replace_current_prefix(item.text)
+            self._shift_placeholders_after_edit(len(item.text) - old_prefix_len)
+        self._refresh_diagnostics()
         self.status = f"Completed {item.text} ({item.kind})"
         self.completions = []
 
@@ -569,6 +822,11 @@ class EditorApp:
         height, width = self.stdscr.getmaxyx()
         text_height = max(1, height - 2)
         gutter_width = self._gutter_width()
+        if self.mode == "LIST":
+            self._draw_list(text_height, width)
+            self._draw_status(height, width)
+            self.stdscr.refresh()
+            return
         for screen_row in range(text_height):
             file_row = self.row_offset + screen_row
             if file_row >= len(self.buffer.lines):
@@ -585,11 +843,17 @@ class EditorApp:
             self.stdscr.move(cursor_y, cursor_x)
         self.stdscr.refresh()
 
+    def _draw_list(self, text_height: int, width: int) -> None:
+        title = f" {self.list_title} "
+        self.stdscr.addnstr(0, 0, title.ljust(width), width - 1, curses.A_REVERSE)
+        for index, line in enumerate(self.list_lines[: max(0, text_height - 1)], start=1):
+            self.stdscr.addnstr(index, 0, line, width - 1)
+
     def _draw_status(self, height: int, width: int) -> None:
         name = str(self.path) if self.path else "[No Name]"
         dirty = " +" if self.buffer.dirty else ""
-        left = f" {self.mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} "
-        self.stdscr.addnstr(height - 2, 0, left.ljust(width), width - 1, curses.A_REVERSE)
+        left = f" {self.mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
+        self.stdscr.addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line
         else:
@@ -646,7 +910,8 @@ class EditorApp:
         start_x = min(max(gutter_width, gutter_width + self.buffer.cursor_col - self.col_offset), max(gutter_width, width - 28))
         for offset, item in enumerate(self.completions):
             attr = curses.A_REVERSE if offset == self.completion_index else curses.A_NORMAL
-            label = f" {item.text:<18} {item.kind:<7} {item.detail:<18}"
+            source = item.source or item.kind
+            label = f" {item.text:<18} {item.kind:<8} {source:<8} {item.detail:<22}"
             self.stdscr.addnstr(start_y + offset, start_x, label, min(len(label), width - start_x - 1), attr)
 
     def _scroll_to_cursor(self) -> None:

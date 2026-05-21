@@ -10,6 +10,12 @@ NUMBER_RE = re.compile(r"\b(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)\b")
 FUNCTION_DECL_RE = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_\s\*]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;{}]*)\)\s*;"
 )
+FUNCTION_DEF_RE = re.compile(
+    r"^\s*(?:static\s+|extern\s+|inline\s+)*([A-Za-z_][A-Za-z0-9_\s\*]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;{}]*)\)\s*\{"
+)
+GLOBAL_RE = re.compile(
+    r"^\s*(?:static\s+|extern\s+|const\s+|volatile\s+)*[A-Za-z_][A-Za-z0-9_\s\*]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^;]+)?;"
+)
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
 
 
@@ -193,6 +199,37 @@ class TextBuffer:
         start = self.cursor_col - len(prefix)
         self.lines[self.cursor_row] = line[:start] + replacement + line[self.cursor_col :]
         self.cursor_col = start + len(replacement)
+        self.dirty = True
+
+    def replace_current_prefix_with_snippet(self, snippet: str) -> None:
+        prefix = self.current_prefix()
+        line = self.current_line()
+        start = self.cursor_col - len(prefix)
+        before = line[:start]
+        after = line[self.cursor_col :]
+        cursor_marker = snippet.find("$0")
+        clean_snippet = snippet.replace("$0", "", 1)
+        replacement_lines = clean_snippet.split("\n")
+        first_row = self.cursor_row
+        indent = re.match(r"\s*", before).group(0)
+        if len(replacement_lines) == 1:
+            self.lines[first_row] = before + replacement_lines[0] + after
+            marker = cursor_marker if cursor_marker >= 0 else len(clean_snippet)
+            self.cursor_col = start + marker
+        else:
+            new_lines = [before + replacement_lines[0]]
+            new_lines.extend(indent + item for item in replacement_lines[1:-1])
+            new_lines.append(indent + replacement_lines[-1] + after)
+            self.lines[first_row : first_row + 1] = new_lines
+            if cursor_marker >= 0:
+                before_marker = snippet[:cursor_marker]
+                marker_row = before_marker.count("\n")
+                marker_col = len(before_marker.rsplit("\n", 1)[-1])
+                self.cursor_row = first_row + marker_row
+                self.cursor_col = len(indent) + marker_col if marker_row else start + marker_col
+            else:
+                self.cursor_row = first_row + len(replacement_lines) - 1
+                self.cursor_col = len(replacement_lines[-1])
         self.dirty = True
 
 
@@ -388,6 +425,8 @@ class CompletionItem:
     text: str
     kind: str
     detail: str = ""
+    source: str = ""
+    insert_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -402,6 +441,175 @@ class CProjectSymbol:
 class HeaderIndex:
     headers: set[str]
     symbols: list[CProjectSymbol]
+
+
+@dataclass(frozen=True)
+class ProjectSymbol:
+    name: str
+    kind: str
+    path: Path
+    row: int
+    col: int
+    detail: str = ""
+    signature: str = ""
+
+
+@dataclass(frozen=True)
+class ProjectIndex:
+    root: Path
+    symbols: list[ProjectSymbol]
+
+    def find_definition(self, name: str) -> ProjectSymbol | None:
+        for symbol in self.symbols:
+            if symbol.name == name:
+                return symbol
+        return None
+
+
+class ProjectScanner:
+    IGNORED_DIRS = {".git", ".hg", ".svn", ".worktrees", "build", "dist", "__pycache__"}
+    SUFFIXES = {".c", ".h"}
+
+    def scan(self, root: Path) -> ProjectIndex:
+        root = Path(root)
+        symbols: list[ProjectSymbol] = []
+        try:
+            paths = sorted(path for path in root.rglob("*") if self._should_scan(path))
+        except OSError:
+            return ProjectIndex(root, [])
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            symbols.extend(self._scan_file(path, lines))
+        return ProjectIndex(root, symbols)
+
+    def _should_scan(self, path: Path) -> bool:
+        if not path.is_file() or path.suffix not in self.SUFFIXES:
+            return False
+        return not any(part in self.IGNORED_DIRS for part in path.parts)
+
+    def _scan_file(self, path: Path, lines: list[str]) -> list[ProjectSymbol]:
+        symbols: list[ProjectSymbol] = []
+        for row, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//"):
+                continue
+            macro = re.match(r"#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+            if macro:
+                symbols.append(ProjectSymbol(macro.group(1), "macro", path, row, line.find(macro.group(1)), path.name))
+                continue
+            typedef = re.match(r"typedef\b.+\b([A-Za-z_][A-Za-z0-9_]*)\s*;", stripped)
+            if typedef:
+                symbols.append(ProjectSymbol(typedef.group(1), "typedef", path, row, line.find(typedef.group(1)), path.name))
+                continue
+            struct = re.match(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+            if struct:
+                symbols.append(ProjectSymbol(struct.group(1), "struct", path, row, line.find(struct.group(1)), path.name))
+                continue
+            function = FUNCTION_DEF_RE.match(stripped) or FUNCTION_DECL_RE.match(stripped)
+            if function:
+                return_type = " ".join(function.group(1).split())
+                name = function.group(2)
+                params = " ".join(function.group(3).split())
+                signature = f"{return_type} {name}({params})"
+                symbols.append(ProjectSymbol(name, "function", path, row, line.find(name), f"{path.name}:{row + 1}", signature))
+                continue
+            global_match = GLOBAL_RE.match(stripped)
+            if global_match and "(" not in stripped.split("=", 1)[0]:
+                name = global_match.group(1)
+                if name not in SyntaxHighlighter.KEYWORDS:
+                    symbols.append(ProjectSymbol(name, "global", path, row, line.find(name), f"{path.name}:{row + 1}"))
+        return symbols
+
+
+@dataclass(frozen=True)
+class Diagnostic:
+    row: int
+    col: int
+    message: str
+    severity: str = "warning"
+
+
+class CDiagnosticEngine:
+    OPENERS = {"(": ")", "[": "]", "{": "}"}
+    CLOSERS = {")": "(", "]": "[", "}": "{"}
+
+    def analyze(self, lines: list[str]) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        diagnostics.extend(self._duplicate_includes(lines))
+        diagnostics.extend(self._strings_and_brackets(lines))
+        diagnostics.extend(self._missing_semicolons(lines))
+        diagnostics.sort(key=lambda item: (item.row, item.col, item.message))
+        return diagnostics
+
+    def _duplicate_includes(self, lines: list[str]) -> list[Diagnostic]:
+        seen: dict[str, tuple[int, int]] = {}
+        diagnostics: list[Diagnostic] = []
+        for row, line in enumerate(lines):
+            match = re.match(r'\s*#\s*include\s*[<"]([^>"]+)[>"]', line)
+            if not match:
+                continue
+            include = match.group(1)
+            if include in seen:
+                diagnostics.append(Diagnostic(row, line.find(include), f"duplicate include: {include}"))
+            else:
+                seen[include] = (row, line.find(include))
+        return diagnostics
+
+    def _strings_and_brackets(self, lines: list[str]) -> list[Diagnostic]:
+        stack: list[tuple[str, int, int]] = []
+        diagnostics: list[Diagnostic] = []
+        for row, line in enumerate(lines):
+            in_string = ""
+            escaped = False
+            index = 0
+            while index < len(line):
+                if not in_string and line.startswith("//", index):
+                    break
+                char = line[index]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == in_string:
+                        in_string = ""
+                    index += 1
+                    continue
+                if char in ('"', "'"):
+                    in_string = char
+                elif char in self.OPENERS:
+                    stack.append((char, row, index))
+                elif char in self.CLOSERS:
+                    if stack and stack[-1][0] == self.CLOSERS[char]:
+                        stack.pop()
+                    else:
+                        diagnostics.append(Diagnostic(row, index, f"unmatched {char}"))
+                index += 1
+            if in_string:
+                diagnostics.append(Diagnostic(row, len(line), "unterminated string literal"))
+        for opener, row, col in stack:
+            diagnostics.append(Diagnostic(row, col, f"unmatched {opener}"))
+        return diagnostics
+
+    def _missing_semicolons(self, lines: list[str]) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        for row, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            if stripped.endswith((";", "{", "}", ":", ",")) or stripped in {"else", "do"}:
+                continue
+            if re.match(r"(if|for|while|switch)\s*\(", stripped):
+                continue
+            if re.match(r"(return|break|continue)\b", stripped) or re.match(
+                r"(?:static\s+|const\s+|unsigned\s+|signed\s+|long\s+|short\s+)*[A-Za-z_][A-Za-z0-9_\s\*]*\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*=.+)?$",
+                stripped,
+            ) or "=" in stripped:
+                diagnostics.append(Diagnostic(row, len(line), "missing semicolon"))
+        return diagnostics
 
 
 class HeaderScanner:
@@ -524,6 +732,12 @@ class CompletionEngine:
         "string.h",
         "time.h",
     }
+    SNIPPETS = {
+        "main": CompletionItem("main", "snippet", "int main(void)", "snippet", "int main(void) {\n    $0\n}"),
+        "for": CompletionItem("for", "snippet", "for loop", "snippet", "for ($0; ; ) {\n    \n}"),
+        "if": CompletionItem("if", "snippet", "if block", "snippet", "if ($0) {\n    \n}"),
+        "switch": CompletionItem("switch", "snippet", "switch block", "snippet", "switch ($0) {\ncase 0:\n    break;\ndefault:\n    break;\n}"),
+    }
 
     def suggest(
         self,
@@ -533,33 +747,39 @@ class CompletionEngine:
         col: int,
         limit: int = 12,
         header_index: HeaderIndex | None = None,
+        project_index: ProjectIndex | None = None,
     ) -> list[CompletionItem]:
         if not prefix:
             return []
-        candidates: dict[str, str] = {}
+        candidates: dict[str, CompletionItem] = {}
         if self._is_include_context(lines, row, col):
             if self._is_local_include_context(lines, row, col) and header_index is not None:
                 for header in header_index.headers:
-                    candidates[header] = "local header"
+                    candidates[header] = CompletionItem(header, "local header", "local header", "header")
             else:
                 for header in self.HEADERS:
-                    candidates[header] = "header"
+                    candidates[header] = CompletionItem(header, "header", "C header", "header")
         else:
+            for snippet in self.SNIPPETS.values():
+                candidates[snippet.text] = snippet
             for keyword in self.C_KEYWORDS:
-                candidates[keyword] = "keyword"
+                candidates.setdefault(keyword, CompletionItem(keyword, "keyword", "C keyword", "keyword"))
             for symbol in self.STD_SYMBOLS:
-                candidates[symbol] = "stdlib"
+                candidates[symbol] = CompletionItem(symbol, "stdlib", "C standard library", "std")
             for word in self._buffer_identifiers(lines):
-                candidates.setdefault(word, "buffer")
+                candidates.setdefault(word, CompletionItem(word, "buffer", "current file", "file"))
             if header_index is not None:
                 for symbol in header_index.symbols:
-                    candidates.setdefault(symbol.name, symbol.kind)
+                    candidates.setdefault(symbol.name, CompletionItem(symbol.name, symbol.kind, symbol.detail or self._detail_for(symbol.kind), "header"))
+            if project_index is not None:
+                for symbol in project_index.symbols:
+                    candidates.setdefault(symbol.name, CompletionItem(symbol.name, symbol.kind, symbol.detail or f"{symbol.path.name}:{symbol.row + 1}", "project"))
 
         scored = []
-        for text, kind in candidates.items():
-            score = self._match_score(prefix, text, kind)
-            if score is not None and text != prefix:
-                scored.append((score, CompletionItem(text, kind, self._detail_for(kind))))
+        for text, item in candidates.items():
+            score = self._match_score(prefix, text, item.kind)
+            if score is not None and not (text == prefix and item.kind != "snippet"):
+                scored.append((score, item))
         scored.sort(key=lambda pair: pair[0])
         return [item for _, item in scored[:limit]]
 
@@ -598,6 +818,7 @@ class CompletionEngine:
             match_rank = 1 + gaps
         if match_rank == 0:
             kind_rank = {
+                "snippet": 0,
                 "keyword": 0,
                 "buffer": 1,
                 "macro": 2,
@@ -611,6 +832,7 @@ class CompletionEngine:
         else:
             kind_rank = {
                 "buffer": 0,
+                "snippet": 1,
                 "macro": 1,
                 "typedef": 1,
                 "struct": 1,

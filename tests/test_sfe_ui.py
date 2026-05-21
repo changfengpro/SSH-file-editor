@@ -76,6 +76,19 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.cursor_col, 6)
         self.assertEqual(app.completions, [])
 
+    def test_insert_mode_accepts_snippet_completion_with_tab(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["ma"]
+        app.buffer.cursor_col = 2
+        app._open_completions()
+
+        app._handle_insert_key("\t")
+
+        self.assertEqual(app.buffer.lines, ["int main(void) {", "    ", "}"])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 4))
+        self.assertEqual(app.completions, [])
+
     def test_insert_mode_newline_does_not_accept_completion(self):
         app = EditorApp(stdscr=None, path=None)
         app.mode = "INSERT"
@@ -388,6 +401,30 @@ class EditorLayoutTests(unittest.TestCase):
 
         self.assertEqual(app.completions[0].text, "mathx.h")
 
+    def test_completion_uses_project_symbols_from_file_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "helper.c").write_text("int project_add(int a, int b) {\n    return a + b;\n}\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "main.c"))
+            app.mode = "INSERT"
+            app.buffer.lines = ["project_"]
+            app.buffer.cursor_col = len(app.buffer.current_line())
+
+            app._open_completions()
+
+        item_by_text = {item.text: item for item in app.completions}
+        self.assertEqual(item_by_text["project_add"].source, "project")
+
+    def test_status_line_includes_version_and_diagnostic_count(self):
+        screen = FakeDrawScreen()
+        app = EditorApp(stdscr=screen, path=None)
+        app.diagnostics = [object(), object()]
+
+        app._draw_status(10, 100)
+
+        status_rows = [call[2] for call in screen.calls]
+        self.assertTrue(any("sfe " in row and "Diagnostics: 2" in row for row in status_rows))
+
     def test_auto_pair_placeholder_draws_dimmed_closer(self):
         screen = FakeDrawScreen()
         app = EditorApp(stdscr=screen, path=None)
@@ -451,6 +488,111 @@ class EditorNormalModeTests(unittest.TestCase):
         app._handle_normal_key("n")
 
         self.assertEqual(app.status, "No previous search")
+
+    def test_command_goto_moves_to_requested_line(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two", "three"]
+
+        app._execute_command("goto 3")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 0))
+        self.assertIn("line 3", app.status)
+
+    def test_command_symbols_lists_current_file_symbols(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["int add(int a, int b) {", "    return a + b;", "}"]
+
+        app._execute_command("symbols")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertIn("add", app.status)
+
+    def test_command_diag_lists_diagnostics(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["int value = 1"]
+
+        app._execute_command("diag")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertIn("missing semicolon", app.status)
+
+    def test_command_help_opens_help_list(self):
+        app = EditorApp(stdscr=None, path=None)
+
+        app._execute_command("help")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertIn(":w", "\n".join(app.list_lines))
+
+    def test_command_write_to_file_saves_as_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "out.c"
+            app = EditorApp(stdscr=None, path=None)
+            app.buffer.lines = ["int value;"]
+
+            app._execute_command(f"w {target}")
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "int value;")
+            self.assertEqual(app.path, target)
+
+    def test_command_edit_loads_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "next.c"
+            target.write_text("int next;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=None)
+
+            app._execute_command(f"e {target}")
+
+            self.assertEqual(app.path, target)
+            self.assertEqual(app.buffer.lines, ["int next;", ""])
+
+    def test_command_set_updates_config_and_writes_user_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+            app.user_config_path = config_path
+
+            app._execute_command("set auto_pair off")
+            app._execute_command("set completion_key ctrl-g")
+            app._execute_command("set number off")
+
+            saved = config_path.read_text(encoding="utf-8")
+            self.assertFalse(app.config.auto_pair)
+            self.assertEqual(app.config.completion_key, "ctrl-g")
+            self.assertFalse(app.config.show_line_numbers)
+            self.assertIn('"auto_pair": false', saved)
+
+    def test_jump_to_definition_and_back_with_project_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / "helper.c"
+            main = root / "main.c"
+            helper.write_text("int project_add(int a, int b) {\n    return a + b;\n}\n", encoding="utf-8")
+            main.write_text("int main(void) {\n    return project_add(1, 2);\n}\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(main))
+            app.buffer.cursor_row = 1
+            app.buffer.cursor_col = len("    return project_add")
+
+            self.assertTrue(app._jump_to_definition())
+            self.assertEqual(app.path, helper)
+            self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 4))
+
+            self.assertTrue(app._jump_back())
+            self.assertEqual(app.path, main)
+            self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, len("    return project_add")))
+
+    def test_diagnostic_navigation_wraps_forward_and_backward(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["int a = 1", "int b = 2"]
+
+        self.assertTrue(app._goto_next_diagnostic(1))
+        self.assertEqual(app.buffer.cursor_row, 0)
+
+        self.assertTrue(app._goto_next_diagnostic(1))
+        self.assertEqual(app.buffer.cursor_row, 1)
+
+        self.assertTrue(app._goto_next_diagnostic(-1))
+        self.assertEqual(app.buffer.cursor_row, 0)
 
 
 class DisplayWidthTests(unittest.TestCase):

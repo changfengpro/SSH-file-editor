@@ -14,6 +14,10 @@ save and quit commands while adding C syntax highlighting, completions,
 local header scanning, line numbers, smart indentation, undo/redo, and simple
 function signature help.
 .PP
+Version 0.3.0 adds project-level C symbol indexing, richer completion sources,
+snippets, lightweight diagnostics, definition jumps, diagnostic navigation, and
+in-editor helper commands for common SSH editing workflows.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -57,6 +61,58 @@ Repeat the last search forward.
 .TP
 .B N
 Repeat the last search backward.
+.TP
+.B Ctrl-]
+Jump to the definition of the symbol under the cursor.
+.TP
+.B Ctrl-O
+Jump back after a definition jump.
+.TP
+.B Ctrl-N, Ctrl-P
+Move to the next or previous diagnostic.
+.TP
+.B :goto N
+Move to line N.
+.TP
+.B :symbols
+Show symbols found in the current file.
+.TP
+.B :diag
+Show lightweight C diagnostics.
+.TP
+.B :help
+Show in-editor help.
+.TP
+.B :e FILE
+Open FILE, if there are no unsaved changes.
+.TP
+.B :w FILE
+Save the current buffer as FILE.
+.TP
+.B :set auto_pair on|off
+Enable or disable automatic paired character insertion.
+.TP
+.B :set completion_key KEY
+Set the manual completion trigger.
+.TP
+.B :set number on|off
+Show or hide line numbers.
+.SH COMPLETION AND DIAGNOSTICS
+Completions include C keywords, snippets, standard library symbols, current
+file identifiers, local headers, local header symbols, and project symbols from
+.B .c
+and
+.B .h
+files under the current file directory. Snippets include
+.B main,
+.B for,
+.B if,
+and
+.B switch.
+.PP
+Diagnostics report unmatched brackets, unterminated strings, duplicate includes,
+and simple missing semicolons. The status line shows the current diagnostic
+count.
 .SH CONFIGURATION
 User configuration is read from
 .B ~/.config/sfe/config.json

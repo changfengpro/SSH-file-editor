@@ -34,10 +34,10 @@ python3 --version
 
 ### 使用 deb 包安装
 
-下载 release 中的 `sfe_0.2.3_all.deb` 后安装：
+下载 release 中的 `sfe_0.3.0_all.deb` 后安装：
 
 ```bash
-sudo apt install ./sfe_0.2.3_all.deb
+sudo apt install ./sfe_0.3.0_all.deb
 ```
 
 安装后可以直接运行：
@@ -129,6 +129,38 @@ Esc
 Esc
 :q!
 ```
+
+## v0.3.0 C IDE 功能
+
+`sfe` 会扫描当前文件所在目录下的 `.c` 和 `.h` 文件，建立项目符号索引。补全候选现在会标出来源，例如 `snippet`、`keyword`、`file`、`header`、`project`，项目内函数、宏、结构体、typedef 和简单全局变量都可以参与补全。
+
+新增代码片段补全：输入 `main`、`for`、`if`、`switch` 后按 `Tab` 可以展开多行 C 模板，光标会落在模板中间的可编辑位置。
+
+新增导航和诊断：
+
+```text
+Ctrl-]       跳转到光标下符号的定义
+Ctrl-O       返回跳转前的位置
+:symbols     查看当前文件符号列表
+:diag        查看 C 诊断列表
+:goto 42     跳转到第 42 行
+:help        查看内置帮助
+Ctrl-N/P     在诊断之间前后跳转
+```
+
+内置轻量 C 诊断会提示括号不匹配、字符串未闭合、重复 include 和明显缺少分号的行。状态栏会显示当前版本和诊断数量。
+
+新增文件和配置命令：
+
+```text
+:e path/to/file.c              打开文件
+:w path/to/file.c              另存为
+:set auto_pair on|off          开关自动补全括号
+:set completion_key ctrl-g     修改手动补全快捷键
+:set number on|off             开关行号
+```
+
+`:set` 命令会写入 `~/.config/sfe/config.json`。
 
 ## Vim 风格按键
 

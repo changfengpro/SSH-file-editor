@@ -3,10 +3,12 @@ import unittest
 from pathlib import Path
 
 from sfe_core import (
+    CDiagnosticEngine,
     CompletionEngine,
     CProjectSymbol,
     HeaderIndex,
     HeaderScanner,
+    ProjectScanner,
     SignatureHelpEngine,
     SyntaxHighlighter,
     TextBuffer,
@@ -143,6 +145,24 @@ class TextBufferTests(unittest.TestCase):
 
         self.assertEqual(buf.lines, ["}"])
         self.assertEqual(buf.cursor_col, 1)
+
+    def test_replace_current_prefix_with_multiline_snippet_places_cursor(self):
+        buf = TextBuffer(["ma"])
+        buf.cursor_col = 2
+
+        buf.replace_current_prefix_with_snippet("int main(void) {\n    $0\n}")
+
+        self.assertEqual(buf.lines, ["int main(void) {", "    ", "}"])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 4))
+
+    def test_replace_current_prefix_with_multiline_snippet_preserves_current_indent(self):
+        buf = TextBuffer(["    if"])
+        buf.cursor_col = len("    if")
+
+        buf.replace_current_prefix_with_snippet("if ($0) {\n    \n}")
+
+        self.assertEqual(buf.lines, ["    if () {", "        ", "    }"])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (0, len("    if (")))
 
 
 class UndoManagerTests(unittest.TestCase):
@@ -299,6 +319,110 @@ class CompletionEngineTests(unittest.TestCase):
 
         self.assertEqual(names[0], "mathx.h")
         self.assertNotIn("stdio.h", names)
+
+    def test_completion_includes_c_snippets_with_insert_text(self):
+        engine = CompletionEngine()
+
+        items = engine.suggest("ma", ["ma"], 0, 2)
+        item_by_text = {item.text: item for item in items}
+
+        self.assertIn("main", item_by_text)
+        self.assertEqual(item_by_text["main"].kind, "snippet")
+        self.assertEqual(item_by_text["main"].source, "snippet")
+        self.assertIn("$0", item_by_text["main"].insert_text)
+
+    def test_completion_keeps_control_flow_snippets_when_name_matches_keyword(self):
+        items = CompletionEngine().suggest("if", ["if"], 0, 2)
+
+        self.assertEqual(items[0].text, "if")
+        self.assertEqual(items[0].kind, "snippet")
+        self.assertIn("$0", items[0].insert_text)
+
+    def test_completion_uses_project_symbols_with_source_and_location_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.c").write_text("int project_total;\nint project_add(int a, int b) {\n    return a + b;\n}\n", encoding="utf-8")
+            project_index = ProjectScanner().scan(root)
+
+        items = CompletionEngine().suggest("project_", ["project_"], 0, 8, project_index=project_index)
+        item_by_text = {item.text: item for item in items}
+
+        self.assertEqual(item_by_text["project_add"].kind, "function")
+        self.assertEqual(item_by_text["project_add"].source, "project")
+        self.assertIn("main.c:2", item_by_text["project_add"].detail)
+        self.assertEqual(item_by_text["project_total"].kind, "global")
+
+
+class ProjectScannerTests(unittest.TestCase):
+    def test_scans_c_project_symbols_recursively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "include").mkdir()
+            (root / "include" / "model.h").write_text(
+                "\n".join(
+                    [
+                        "#define LIMIT 8",
+                        "typedef unsigned long count_t;",
+                        "struct model;",
+                        "int model_size(struct model *m);",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "main.c").write_text(
+                "\n".join(
+                    [
+                        '#include "model.h"',
+                        "static int total_count;",
+                        "int add(int left, int right) {",
+                        "    return left + right;",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            index = ProjectScanner().scan(root)
+
+        symbols = {symbol.name: symbol for symbol in index.symbols}
+        self.assertEqual(symbols["LIMIT"].kind, "macro")
+        self.assertEqual(symbols["count_t"].kind, "typedef")
+        self.assertEqual(symbols["model"].kind, "struct")
+        self.assertEqual(symbols["model_size"].kind, "function")
+        self.assertEqual(symbols["add"].row, 2)
+        self.assertEqual(symbols["add"].path.name, "main.c")
+        self.assertEqual(symbols["total_count"].kind, "global")
+
+    def test_find_definition_prefers_exact_symbol_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.c").write_text("int target_value;\n", encoding="utf-8")
+            index = ProjectScanner().scan(root)
+
+        symbol = index.find_definition("target_value")
+
+        self.assertIsNotNone(symbol)
+        self.assertEqual(symbol.name, "target_value")
+
+
+class CDiagnosticEngineTests(unittest.TestCase):
+    def test_reports_unmatched_brackets_unterminated_string_duplicate_include_and_missing_semicolon(self):
+        diagnostics = CDiagnosticEngine().analyze(
+            [
+                "#include <stdio.h>",
+                "#include <stdio.h>",
+                "int value = 1",
+                'printf("oops);',
+                "if (value > 0) {",
+            ]
+        )
+
+        messages = [diagnostic.message for diagnostic in diagnostics]
+
+        self.assertIn("duplicate include: stdio.h", messages)
+        self.assertIn("missing semicolon", messages)
+        self.assertIn("unterminated string literal", messages)
+        self.assertIn("unmatched {", messages)
 
 
 class HeaderScannerTests(unittest.TestCase):
