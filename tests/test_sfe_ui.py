@@ -1,7 +1,7 @@
 import unittest
 
 import sfe
-from sfe import EditorApp, EditorConfig
+from sfe import EditorApp, EditorConfig, display_width
 
 
 class FakeCurses:
@@ -204,6 +204,14 @@ class EditorInsertModeTests(unittest.TestCase):
 
         self.assertEqual(app.buffer.lines, ["{"])
         self.assertEqual(app.buffer.cursor_col, 1)
+
+
+class DisplayWidthTests(unittest.TestCase):
+    def test_display_width_counts_cjk_characters_as_two_columns(self):
+        self.assertEqual(display_width('printf("这是一个测试C程序\\n");'), 30)
+
+    def test_display_width_counts_ascii_as_one_column(self):
+        self.assertEqual(display_width('printf("Hello, World!\\n");'), 26)
 
 
 if __name__ == "__main__":

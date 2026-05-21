@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, VimCommandProcessor
@@ -382,7 +383,8 @@ class EditorApp:
         self._draw_completions(text_height, width, gutter_width)
         self._draw_status(height, width)
         cursor_y = self.buffer.cursor_row - self.row_offset
-        cursor_x = gutter_width + self.buffer.cursor_col - self.col_offset
+        cursor_prefix = self.buffer.current_line()[: self.buffer.cursor_col]
+        cursor_x = gutter_width + display_width(cursor_prefix) - self.col_offset
         if 0 <= cursor_y < text_height and 0 <= cursor_x < width:
             self.stdscr.move(cursor_y, cursor_x)
         self.stdscr.refresh()
@@ -416,7 +418,7 @@ class EditorApp:
             text = token.text[start - token_start : end - token_start]
             attr = self.syntax_attrs.get(token.kind, curses.A_NORMAL)
             self.stdscr.addnstr(screen_row, x, text, max(0, width - x - 1), attr)
-            x += len(text)
+            x += display_width(text)
 
     def _draw_completions(self, text_height: int, width: int, gutter_width: int) -> None:
         if not self.completions:
@@ -454,6 +456,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def re_match_completion_char(key: str) -> bool:
     return key.isalnum() or key == "_"
+
+
+def display_width(text: str) -> int:
+    width = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+    return width
 
 
 def normalize_key_name(name: str) -> str:
