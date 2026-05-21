@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 NUMBER_RE = re.compile(r"\b(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)\b")
+FUNCTION_DECL_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_\s\*]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;{}]*)\)\s*;"
+)
 
 
 class TextBuffer:
@@ -347,6 +351,64 @@ class CompletionItem:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class CProjectSymbol:
+    name: str
+    kind: str
+    detail: str = ""
+    signature: str = ""
+
+
+@dataclass(frozen=True)
+class HeaderIndex:
+    headers: set[str]
+    symbols: list[CProjectSymbol]
+
+
+class HeaderScanner:
+    def scan(self, directory: Path) -> HeaderIndex:
+        headers: set[str] = set()
+        symbols: list[CProjectSymbol] = []
+        try:
+            header_paths = sorted(directory.glob("*.h"))
+        except OSError:
+            return HeaderIndex(headers, symbols)
+        for path in header_paths:
+            headers.add(path.name)
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            symbols.extend(self._scan_lines(path.name, lines))
+        return HeaderIndex(headers, symbols)
+
+    def _scan_lines(self, header_name: str, lines: list[str]) -> list[CProjectSymbol]:
+        symbols: list[CProjectSymbol] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            macro = re.match(r"#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+            if macro:
+                symbols.append(CProjectSymbol(macro.group(1), "macro", header_name))
+                continue
+            typedef = re.match(r"typedef\b.+\b([A-Za-z_][A-Za-z0-9_]*)\s*;", stripped)
+            if typedef:
+                symbols.append(CProjectSymbol(typedef.group(1), "typedef", header_name))
+                continue
+            struct = re.match(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+            if struct:
+                symbols.append(CProjectSymbol(struct.group(1), "struct", header_name))
+                continue
+            function = FUNCTION_DECL_RE.match(stripped)
+            if function:
+                return_type = " ".join(function.group(1).split())
+                name = function.group(2)
+                params = " ".join(function.group(3).split())
+                symbols.append(CProjectSymbol(name, "function", header_name, f"{return_type} {name}({params})"))
+        return symbols
+
+
 class CompletionEngine:
     C_KEYWORDS = {
         "auto",
@@ -424,13 +486,25 @@ class CompletionEngine:
         "time.h",
     }
 
-    def suggest(self, prefix: str, lines: list[str], row: int, col: int, limit: int = 12) -> list[CompletionItem]:
+    def suggest(
+        self,
+        prefix: str,
+        lines: list[str],
+        row: int,
+        col: int,
+        limit: int = 12,
+        header_index: HeaderIndex | None = None,
+    ) -> list[CompletionItem]:
         if not prefix:
             return []
         candidates: dict[str, str] = {}
         if self._is_include_context(lines, row, col):
-            for header in self.HEADERS:
-                candidates[header] = "header"
+            if self._is_local_include_context(lines, row, col) and header_index is not None:
+                for header in header_index.headers:
+                    candidates[header] = "local header"
+            else:
+                for header in self.HEADERS:
+                    candidates[header] = "header"
         else:
             for keyword in self.C_KEYWORDS:
                 candidates[keyword] = "keyword"
@@ -438,6 +512,9 @@ class CompletionEngine:
                 candidates[symbol] = "stdlib"
             for word in self._buffer_identifiers(lines):
                 candidates.setdefault(word, "buffer")
+            if header_index is not None:
+                for symbol in header_index.symbols:
+                    candidates.setdefault(symbol.name, symbol.kind)
 
         scored = []
         for text, kind in candidates.items():
@@ -459,6 +536,10 @@ class CompletionEngine:
         before_cursor = lines[row][:col]
         return before_cursor.lstrip().startswith("#include")
 
+    def _is_local_include_context(self, lines: list[str], row: int, col: int) -> bool:
+        before_cursor = lines[row][:col]
+        return '"' in before_cursor and "<" not in before_cursor
+
     def _match_score(self, prefix: str, text: str, kind: str) -> tuple[int, int, int, int, str] | None:
         needle = prefix.lower()
         haystack = text.lower()
@@ -477,9 +558,29 @@ class CompletionEngine:
             match_group = 1
             match_rank = 1 + gaps
         if match_rank == 0:
-            kind_rank = {"keyword": 0, "buffer": 1, "stdlib": 2, "header": 0}.get(kind, 9)
+            kind_rank = {
+                "keyword": 0,
+                "buffer": 1,
+                "macro": 2,
+                "typedef": 2,
+                "struct": 2,
+                "function": 2,
+                "stdlib": 3,
+                "header": 0,
+                "local header": 0,
+            }.get(kind, 9)
         else:
-            kind_rank = {"buffer": 0, "stdlib": 1, "keyword": 2, "header": 0}.get(kind, 9)
+            kind_rank = {
+                "buffer": 0,
+                "macro": 1,
+                "typedef": 1,
+                "struct": 1,
+                "function": 1,
+                "stdlib": 2,
+                "keyword": 3,
+                "header": 0,
+                "local header": 0,
+            }.get(kind, 9)
         return (match_group, kind_rank, match_rank, len(text), haystack)
 
     def _detail_for(self, kind: str) -> str:
@@ -488,4 +589,60 @@ class CompletionEngine:
             "stdlib": "C standard library",
             "keyword": "C keyword",
             "header": "C header",
+            "local header": "local header",
+            "macro": "local header macro",
+            "typedef": "local header typedef",
+            "struct": "local header struct",
+            "function": "local header function",
         }.get(kind, kind)
+
+
+class SignatureHelpEngine:
+    BUILTIN_SIGNATURES = {
+        "printf": "int printf(const char *format, ...)",
+        "fprintf": "int fprintf(FILE *stream, const char *format, ...)",
+        "scanf": "int scanf(const char *format, ...)",
+        "malloc": "void *malloc(size_t size)",
+        "free": "void free(void *ptr)",
+        "strlen": "size_t strlen(const char *s)",
+        "strcpy": "char *strcpy(char *dest, const char *src)",
+        "memcpy": "void *memcpy(void *dest, const void *src, size_t n)",
+        "fopen": "FILE *fopen(const char *path, const char *mode)",
+        "fclose": "int fclose(FILE *stream)",
+    }
+
+    def __init__(self, signatures: dict[str, str] | None = None):
+        self.signatures = dict(self.BUILTIN_SIGNATURES)
+        if signatures:
+            self.signatures.update(signatures)
+
+    @classmethod
+    def from_header_index(cls, header_index: HeaderIndex | None) -> "SignatureHelpEngine":
+        signatures = {}
+        if header_index is not None:
+            for symbol in header_index.symbols:
+                if symbol.kind == "function" and symbol.signature:
+                    signatures[symbol.name] = symbol.signature
+        return cls(signatures)
+
+    def signature_for(self, line: str, col: int) -> str:
+        before_cursor = line[:col]
+        call_name = self._nearest_call_name(before_cursor)
+        if not call_name:
+            return ""
+        return self.signatures.get(call_name, "")
+
+    def _nearest_call_name(self, text: str) -> str:
+        depth = 0
+        for index in range(len(text) - 1, -1, -1):
+            char = text[index]
+            if char == ")":
+                depth += 1
+            elif char == "(":
+                if depth:
+                    depth -= 1
+                    continue
+                prefix = text[:index].rstrip()
+                match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)$", prefix)
+                return match.group(1) if match else ""
+        return ""

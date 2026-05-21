@@ -1,6 +1,18 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, UndoManager, VimCommandProcessor
+from sfe_core import (
+    CompletionEngine,
+    CProjectSymbol,
+    HeaderIndex,
+    HeaderScanner,
+    SignatureHelpEngine,
+    SyntaxHighlighter,
+    TextBuffer,
+    UndoManager,
+    VimCommandProcessor,
+)
 
 
 class TextBufferTests(unittest.TestCase):
@@ -200,6 +212,77 @@ class CompletionEngineTests(unittest.TestCase):
 
         self.assertLess(names.index("stdio.h"), names.index("assert.h"))
         self.assertTrue(all(name.endswith(".h") for name in names))
+
+    def test_local_header_symbols_rank_before_stdlib(self):
+        engine = CompletionEngine()
+        index = HeaderIndex(
+            headers={"mathx.h"},
+            symbols=[CProjectSymbol("malloc_count", "macro", "mathx.h")],
+        )
+
+        items = engine.suggest("ma", ["int main(void);"], 0, 2, header_index=index)
+
+        self.assertEqual(items[0].text, "main")
+        self.assertEqual(items[1].text, "malloc_count")
+        self.assertLess([item.text for item in items].index("malloc_count"), [item.text for item in items].index("malloc"))
+
+    def test_include_completion_suggests_local_headers_for_quotes(self):
+        engine = CompletionEngine()
+        index = HeaderIndex(headers={"mathx.h", "model.h"}, symbols=[])
+        lines = ['#include "ma']
+
+        names = [item.text for item in engine.suggest("ma", lines, 0, len(lines[0]), header_index=index)]
+
+        self.assertEqual(names[0], "mathx.h")
+        self.assertNotIn("stdio.h", names)
+
+
+class HeaderScannerTests(unittest.TestCase):
+    def test_scans_current_directory_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mathx.h").write_text(
+                "\n".join(
+                    [
+                        "#define LIMIT 16",
+                        "typedef unsigned long size_alias;",
+                        "struct item;",
+                        "int add(int left, int right);",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            index = HeaderScanner().scan(root)
+
+        self.assertIn("mathx.h", index.headers)
+        symbols = {symbol.name: symbol for symbol in index.symbols}
+        self.assertEqual(symbols["LIMIT"].kind, "macro")
+        self.assertEqual(symbols["size_alias"].kind, "typedef")
+        self.assertEqual(symbols["item"].kind, "struct")
+        self.assertEqual(symbols["add"].kind, "function")
+        self.assertEqual(symbols["add"].signature, "int add(int left, int right)")
+
+
+class SignatureHelpEngineTests(unittest.TestCase):
+    def test_returns_builtin_function_signature(self):
+        engine = SignatureHelpEngine()
+        line = 'printf("'
+
+        self.assertEqual(
+            engine.signature_for(line, len(line)),
+            "int printf(const char *format, ...)",
+        )
+
+    def test_returns_header_function_signature(self):
+        index = HeaderIndex(
+            headers={"mathx.h"},
+            symbols=[CProjectSymbol("add", "function", "mathx.h", "int add(int left, int right)")],
+        )
+        engine = SignatureHelpEngine.from_header_index(index)
+        line = "total = add("
+
+        self.assertEqual(engine.signature_for(line, len(line)), "int add(int left, int right)")
 
 
 class SyntaxHighlighterTests(unittest.TestCase):

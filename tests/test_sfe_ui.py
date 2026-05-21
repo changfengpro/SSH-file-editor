@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import sfe
 from sfe import EditorApp, EditorConfig, display_width
@@ -234,6 +236,27 @@ class EditorLayoutTests(unittest.TestCase):
         app.buffer.cursor_col = len('printf("这是')
 
         self.assertEqual(app._cursor_screen_x(), app._gutter_width() + display_width('printf("这是'))
+
+    def test_signature_help_text_returns_insert_mode_signature(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(signature_help=True))
+        app.mode = "INSERT"
+        app.buffer.lines = ['printf("']
+        app.buffer.cursor_col = len(app.buffer.current_line())
+
+        self.assertEqual(app._signature_help_text(), "int printf(const char *format, ...)")
+
+    def test_completion_uses_local_header_index_from_file_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mathx.h").write_text("#define LIMIT 16\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "main.c"))
+            app.mode = "INSERT"
+            app.buffer.lines = ['#include "ma']
+            app.buffer.cursor_col = len(app.buffer.current_line())
+
+            app._open_completions()
+
+        self.assertEqual(app.completions[0].text, "mathx.h")
 
 
 class EditorNormalModeTests(unittest.TestCase):

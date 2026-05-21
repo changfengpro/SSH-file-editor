@@ -9,7 +9,16 @@ import sys
 import unicodedata
 from pathlib import Path
 
-from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, UndoManager, VimCommandProcessor
+from sfe_core import (
+    CompletionEngine,
+    HeaderIndex,
+    HeaderScanner,
+    SignatureHelpEngine,
+    SyntaxHighlighter,
+    TextBuffer,
+    UndoManager,
+    VimCommandProcessor,
+)
 
 try:
     import curses
@@ -107,6 +116,8 @@ class EditorApp:
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
         self.highlighter = SyntaxHighlighter()
+        self.header_index = self._load_header_index()
+        self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
         self.row_offset = 0
         self.col_offset = 0
         self.mode = "NORMAL"
@@ -155,6 +166,11 @@ class EditorApp:
             return TextBuffer()
         text = path.read_text(encoding="utf-8", errors="replace")
         return TextBuffer.from_text(text)
+
+    def _load_header_index(self) -> HeaderIndex:
+        if not self.config.scan_local_headers or self.path is None:
+            return HeaderIndex(set(), [])
+        return HeaderScanner().scan(self.path.parent)
 
     def _save(self) -> None:
         if not self.path:
@@ -379,6 +395,7 @@ class EditorApp:
             self.buffer.lines,
             self.buffer.cursor_row,
             self.buffer.cursor_col,
+            header_index=self.header_index,
         )
         self.completion_index = 0
         if not self.completions and show_status:
@@ -461,8 +478,13 @@ class EditorApp:
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line
         else:
-            bottom = self.status
+            bottom = self._signature_help_text() or self.status
         self.stdscr.addnstr(height - 1, 0, bottom.ljust(width), width - 1)
+
+    def _signature_help_text(self) -> str:
+        if self.mode != "INSERT" or not self.config.signature_help:
+            return ""
+        return self.signature_help.signature_for(self.buffer.current_line(), self.buffer.cursor_col)
 
     def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int) -> None:
         visible_start = self.col_offset
