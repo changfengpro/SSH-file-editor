@@ -51,6 +51,23 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue(launcher.startswith(b"#!/bin/sh\n"))
         self.assertNotIn(b"\r\n", launcher)
 
+    def test_built_deb_contains_config_man_page_and_upgrade_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_package(
+                ROOT,
+                build_root=tmp_path / "build",
+                dist_dir=tmp_path / "dist",
+            )
+            config = read_deb_member(deb_path, "data.tar.gz", "./etc/sfe/config.json")
+            man_page = read_deb_member(deb_path, "data.tar.gz", "./usr/share/man/man1/sfe.1.gz")
+            upgrade = read_deb_member(deb_path, "data.tar.gz", "./usr/bin/sfe-upgrade")
+
+        self.assertIn(b'"indent_width": 4', config)
+        self.assertTrue(gzip.decompress(man_page).startswith(b".TH SFE 1"))
+        self.assertTrue(upgrade.startswith(b"#!/bin/sh\n"))
+        self.assertNotIn(b"\r\n", upgrade)
+
 
 if __name__ == "__main__":
     unittest.main()

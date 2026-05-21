@@ -65,6 +65,10 @@ def _read_text_lf(path):
     return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
+def _read_gzipped_text_lf(path, mtime):
+    return gzip.compress(_read_text_lf(path), mtime=mtime)
+
+
 def build_package(root, build_root=None, dist_dir=None):
     root = Path(root)
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
@@ -91,6 +95,8 @@ def build_package(root, build_root=None, dist_dir=None):
 
     data_tar = _gzipped_tar(
         [
+            ("dir", "./etc", 0o755),
+            ("dir", "./etc/sfe", 0o755),
             ("dir", "./usr", 0o755),
             ("dir", "./usr/bin", 0o755),
             ("dir", "./usr/lib", 0o755),
@@ -98,10 +104,20 @@ def build_package(root, build_root=None, dist_dir=None):
             ("dir", "./usr/share", 0o755),
             ("dir", "./usr/share/doc", 0o755),
             ("dir", "./usr/share/doc/sfe", 0o755),
+            ("dir", "./usr/share/man", 0o755),
+            ("dir", "./usr/share/man/man1", 0o755),
+            ("file", "./etc/sfe/config.json", _read_text_lf(root / "packaging" / "debian" / "config.json"), 0o644),
             ("file", "./usr/bin/sfe", _read_text_lf(root / "packaging" / "debian" / "sfe"), 0o755),
+            ("file", "./usr/bin/sfe-upgrade", _read_text_lf(root / "packaging" / "debian" / "sfe-upgrade"), 0o755),
             ("file", "./usr/lib/sfe/sfe.py", root / "sfe.py", 0o644),
             ("file", "./usr/lib/sfe/sfe_core.py", root / "sfe_core.py", 0o644),
             ("file", "./usr/share/doc/sfe/README.md", root / "README.md", 0o644),
+            (
+                "file",
+                "./usr/share/man/man1/sfe.1.gz",
+                _read_gzipped_text_lf(root / "packaging" / "debian" / "sfe.1", mtime),
+                0o644,
+            ),
         ],
         mtime,
     )

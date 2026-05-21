@@ -1,0 +1,62 @@
+.TH SFE 1
+.SH NAME
+sfe \- SSH-friendly terminal C code editor
+.SH SYNOPSIS
+.B sfe
+[\fIfile\fR]
+.SH DESCRIPTION
+.B sfe
+is a lightweight terminal editor for SSH sessions. It keeps common Vim-style
+save and quit commands while adding C syntax highlighting, completions,
+local header scanning, line numbers, smart indentation, undo/redo, and simple
+function signature help.
+.SH COMMANDS
+.TP
+.B i
+Enter Insert mode.
+.TP
+.B Esc
+Return to Normal mode.
+.TP
+.B :w
+Save the current file.
+.TP
+.B :q
+Quit if there are no unsaved changes.
+.TP
+.B :q!
+Quit without saving changes.
+.TP
+.B :wq
+Save and quit.
+.TP
+.B u
+Undo the last edit in Normal mode.
+.TP
+.B Ctrl-R
+Redo the last undone edit in Normal mode.
+.SH CONFIGURATION
+User configuration is read from
+.B ~/.config/sfe/config.json
+and overrides the system defaults in
+.B /etc/sfe/config.json.
+.PP
+Supported keys include
+.B auto_pair,
+.B completion_key,
+.B indent_width,
+.B show_line_numbers,
+.B scan_local_headers,
+and
+.B signature_help.
+.SH FILES
+.TP
+.B /etc/sfe/config.json
+System default configuration.
+.TP
+.B ~/.config/sfe/config.json
+User configuration.
+.SH UPGRADE
+Run
+.B sfe-upgrade
+to download and install the latest GitHub release package.

@@ -1,0 +1,63 @@
+#!/bin/sh
+set -eu
+
+REPO_API="${SFE_RELEASE_API:-https://api.github.com/repos/changfengpro/SSH-file-editor/releases/latest}"
+
+usage() {
+    cat <<'USAGE'
+Usage: sfe-upgrade
+
+Download the latest sfe Debian package from GitHub Releases and install it
+with apt. Requires curl, sha256sum, and sudo.
+USAGE
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    usage
+    exit 0
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "sfe-upgrade: curl is required" >&2
+    exit 1
+fi
+
+tmpdir=$(mktemp -d)
+cleanup() {
+    rm -rf "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+release_json="$tmpdir/release.json"
+curl -fsSL "$REPO_API" -o "$release_json"
+
+deb_url=$(python3 - "$release_json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    release = json.load(fh)
+
+for asset in release.get("assets", []):
+    name = asset.get("name", "")
+    url = asset.get("browser_download_url", "")
+    if name.startswith("sfe_") and name.endswith("_all.deb") and url:
+        print(url)
+        break
+else:
+    raise SystemExit("no sfe Debian package asset found in latest release")
+PY
+)
+
+deb_name=${deb_url##*/}
+deb_path="$tmpdir/$deb_name"
+
+echo "Downloading $deb_name"
+echo "URL: $deb_url"
+curl -fL "$deb_url" -o "$deb_path"
+
+echo "SHA256:"
+sha256sum "$deb_path"
+
+echo "Installing $deb_name"
+sudo apt install "$deb_path"
