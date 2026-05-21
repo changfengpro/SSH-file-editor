@@ -27,6 +27,7 @@ CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
+SYSTEM_CONFIG_PATH = Path("/etc/sfe/config.json")
 DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
 
@@ -35,27 +36,66 @@ KEY_SEQUENCE_TIMEOUT_MS = 25
 class EditorConfig:
     auto_pair: bool = True
     completion_key: str = "ctrl+space"
+    indent_width: int = 4
+    show_line_numbers: bool = True
+    scan_local_headers: bool = True
+    signature_help: bool = True
 
 
-def load_config(path: Path | None = None) -> EditorConfig:
-    path = DEFAULT_CONFIG_PATH if path is None else path
+def load_config(
+    path: Path | None = None,
+    *,
+    user_path: Path | None = None,
+    system_path: Path | None = None,
+) -> EditorConfig:
+    if path is not None and user_path is None:
+        user_path = path
+        system_path = Path("missing-system-config.json") if system_path is None else system_path
+    user_path = DEFAULT_CONFIG_PATH if user_path is None else user_path
+    system_path = SYSTEM_CONFIG_PATH if system_path is None else system_path
+    config = EditorConfig()
+    for candidate in (system_path, user_path):
+        config = _merge_config(config, _read_config(candidate))
+    return config
+
+
+def _read_config(path: Path) -> dict:
     if not path.exists():
-        return EditorConfig()
+        return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return EditorConfig()
-    if not isinstance(raw, dict):
-        return EditorConfig()
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
-    defaults = EditorConfig()
-    auto_pair = raw.get("auto_pair", defaults.auto_pair)
-    completion_key = raw.get("completion_key", defaults.completion_key)
+
+def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
+    auto_pair = raw.get("auto_pair", base.auto_pair)
+    completion_key = raw.get("completion_key", base.completion_key)
+    indent_width = raw.get("indent_width", base.indent_width)
+    show_line_numbers = raw.get("show_line_numbers", base.show_line_numbers)
+    scan_local_headers = raw.get("scan_local_headers", base.scan_local_headers)
+    signature_help = raw.get("signature_help", base.signature_help)
     if not isinstance(auto_pair, bool):
-        auto_pair = defaults.auto_pair
+        auto_pair = base.auto_pair
     if not isinstance(completion_key, str) or not normalize_key_name(completion_key):
-        completion_key = defaults.completion_key
-    return EditorConfig(auto_pair=auto_pair, completion_key=completion_key)
+        completion_key = base.completion_key
+    if not isinstance(indent_width, int) or not 1 <= indent_width <= 8:
+        indent_width = base.indent_width
+    if not isinstance(show_line_numbers, bool):
+        show_line_numbers = base.show_line_numbers
+    if not isinstance(scan_local_headers, bool):
+        scan_local_headers = base.scan_local_headers
+    if not isinstance(signature_help, bool):
+        signature_help = base.signature_help
+    return EditorConfig(
+        auto_pair=auto_pair,
+        completion_key=completion_key,
+        indent_width=indent_width,
+        show_line_numbers=show_line_numbers,
+        scan_local_headers=scan_local_headers,
+        signature_help=signature_help,
+    )
 
 
 class EditorApp:

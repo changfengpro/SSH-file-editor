@@ -1,6 +1,6 @@
 import unittest
 
-from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, VimCommandProcessor
+from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, UndoManager, VimCommandProcessor
 
 
 class TextBufferTests(unittest.TestCase):
@@ -49,6 +49,54 @@ class TextBufferTests(unittest.TestCase):
 
         self.assertEqual(buf.lines, ["    int main(void) {"])
         self.assertEqual(buf.cursor_col, 4)
+
+    def test_newline_preserves_indent_and_adds_one_level_after_open_brace(self):
+        buf = TextBuffer(["    if (ok) {"])
+        buf.cursor_col = len(buf.current_line())
+
+        buf.newline_with_indent(indent_width=4)
+
+        self.assertEqual(buf.lines, ["    if (ok) {", "        "])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 8))
+
+    def test_newline_preserves_indent_without_open_brace(self):
+        buf = TextBuffer(["    return value;"])
+        buf.cursor_col = len(buf.current_line())
+
+        buf.newline_with_indent(indent_width=2)
+
+        self.assertEqual(buf.lines, ["    return value;", "    "])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 4))
+
+
+class UndoManagerTests(unittest.TestCase):
+    def test_undo_and_redo_restore_buffer_snapshot(self):
+        buf = TextBuffer(["int"])
+        undo = UndoManager()
+
+        undo.record(buf)
+        buf.insert(" main")
+
+        self.assertTrue(undo.undo(buf))
+        self.assertEqual(buf.lines, ["int"])
+        self.assertEqual(buf.cursor_col, 0)
+
+        self.assertTrue(undo.redo(buf))
+        self.assertEqual(buf.lines, [" mainint"])
+        self.assertEqual(buf.cursor_col, 5)
+
+    def test_new_edit_after_undo_clears_redo_stack(self):
+        buf = TextBuffer([""])
+        undo = UndoManager()
+        undo.record(buf)
+        buf.insert("a")
+        undo.undo(buf)
+
+        undo.record(buf)
+        buf.insert("b")
+
+        self.assertFalse(undo.redo(buf))
+        self.assertEqual(buf.lines, ["b"])
 
 
 class CompletionEngineTests(unittest.TestCase):

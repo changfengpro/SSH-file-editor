@@ -30,6 +30,15 @@ class TextBuffer:
     def current_line(self) -> str:
         return self.lines[self.cursor_row]
 
+    def snapshot(self) -> "BufferSnapshot":
+        return BufferSnapshot(tuple(self.lines), self.cursor_row, self.cursor_col, self.dirty)
+
+    def restore(self, snapshot: "BufferSnapshot") -> None:
+        self.lines = list(snapshot.lines) or [""]
+        self.cursor_row = min(snapshot.cursor_row, len(self.lines) - 1)
+        self.cursor_col = min(snapshot.cursor_col, len(self.current_line()))
+        self.dirty = snapshot.dirty
+
     def move_left(self) -> None:
         if self.cursor_col > 0:
             self.cursor_col -= 1
@@ -85,6 +94,19 @@ class TextBuffer:
         self.cursor_col = 0
         self.dirty = True
 
+    def newline_with_indent(self, indent_width: int = 4) -> None:
+        line = self.current_line()
+        before = line[: self.cursor_col]
+        leading = re.match(r"\s*", before).group(0)
+        extra = " " * indent_width if before.rstrip().endswith("{") else ""
+        indent = leading + extra
+        after = line[self.cursor_col :]
+        self.lines[self.cursor_row] = before
+        self.lines.insert(self.cursor_row + 1, indent + after)
+        self.cursor_row += 1
+        self.cursor_col = len(indent)
+        self.dirty = True
+
     def backspace(self) -> None:
         if self.cursor_col > 0:
             line = self.current_line()
@@ -129,6 +151,41 @@ class TextBuffer:
         self.lines[self.cursor_row] = line[:start] + replacement + line[self.cursor_col :]
         self.cursor_col = start + len(replacement)
         self.dirty = True
+
+
+@dataclass(frozen=True)
+class BufferSnapshot:
+    lines: tuple[str, ...]
+    cursor_row: int
+    cursor_col: int
+    dirty: bool
+
+
+class UndoManager:
+    def __init__(self):
+        self._undo: list[BufferSnapshot] = []
+        self._redo: list[BufferSnapshot] = []
+
+    def record(self, buffer: TextBuffer) -> None:
+        snapshot = buffer.snapshot()
+        if self._undo and self._undo[-1] == snapshot:
+            return
+        self._undo.append(snapshot)
+        self._redo.clear()
+
+    def undo(self, buffer: TextBuffer) -> bool:
+        if not self._undo:
+            return False
+        self._redo.append(buffer.snapshot())
+        buffer.restore(self._undo.pop())
+        return True
+
+    def redo(self, buffer: TextBuffer) -> bool:
+        if not self._redo:
+            return False
+        self._undo.append(buffer.snapshot())
+        buffer.restore(self._redo.pop())
+        return True
 
 
 @dataclass(frozen=True)
