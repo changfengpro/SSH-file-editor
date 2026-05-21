@@ -34,10 +34,10 @@ python3 --version
 
 ### 使用 deb 包安装
 
-下载 release 中的 `sfe_0.4.1_all.deb` 后安装：
+下载 release 中的 `sfe_0.4.2_all.deb` 后安装：
 
 ```bash
-sudo apt install ./sfe_0.4.1_all.deb
+sudo apt install ./sfe_0.4.2_all.deb
 ```
 
 安装后可以直接运行：
@@ -162,7 +162,7 @@ Ctrl-N/P     在诊断之间前后跳转
 
 `:set` 命令会写入 `~/.config/sfe/config.json`。
 
-## v0.4.1 项目工作流
+## v0.4.2 项目工作流
 
 `sfe` 现在会通过 `Makefile`、`.git` 或 `compile_commands.json` 向上识别项目根目录，并围绕项目提供文件、构建和错误导航能力：
 
