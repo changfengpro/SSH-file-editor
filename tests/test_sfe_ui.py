@@ -13,6 +13,7 @@ class FakeCurses:
     error = RuntimeError
     A_DIM = 1
     A_NORMAL = 0
+    A_REVERSE = 2
     KEY_LEFT = 260
     KEY_RIGHT = 261
     KEY_UP = 259
@@ -42,9 +43,22 @@ class FakeInputScreen:
 class FakeDrawScreen:
     def __init__(self):
         self.calls = []
+        self.cursor = None
 
     def addnstr(self, row, col, text, max_width, attr=0):
         self.calls.append((row, col, text[:max_width], attr))
+
+    def erase(self):
+        self.calls.append(("erase",))
+
+    def getmaxyx(self):
+        return (20, 80)
+
+    def move(self, row, col):
+        self.cursor = (row, col)
+
+    def refresh(self):
+        self.calls.append(("refresh",))
 
 
 class EditorInsertModeTests(unittest.TestCase):
@@ -579,7 +593,7 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(app.config.recent_files_limit, 7)
             self.assertIn('"build_command": "make debug"', saved)
 
-    def test_command_tree_lists_project_files(self):
+    def test_command_tree_toggles_collapsed_project_pane(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Makefile").write_text("all:\n\tcc src/main.c\n", encoding="utf-8")
@@ -588,10 +602,86 @@ class EditorNormalModeTests(unittest.TestCase):
             app = EditorApp(stdscr=None, path=str(root / "src" / "main.c"))
 
             app._execute_command("tree")
+            visible_after_open = app.tree_visible
+            app._execute_command("tree")
 
-        self.assertEqual(app.mode, "LIST")
-        self.assertEqual(app.list_title, "Project")
-        self.assertIn("src/main.c", "\n".join(app.list_lines))
+        self.assertEqual(app.mode, "NORMAL")
+        self.assertTrue(visible_after_open)
+        self.assertFalse(app.tree_visible)
+        self.assertFalse(app.tree_focused)
+        self.assertEqual(app.tree_cursor, 0)
+        self.assertIn("src", [entry.relative_path for entry in app.tree_entries])
+        self.assertNotIn("src/main.c", [entry.relative_path for entry in app.tree_entries])
+
+    def test_command_tree_open_and_close_are_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "main.c"))
+
+            app._execute_command("tree open")
+            visible_after_open = app.tree_visible
+            app._execute_command("tree close")
+
+        self.assertTrue(visible_after_open)
+        self.assertFalse(app.tree_visible)
+
+    def test_tree_enter_toggles_directory_and_opens_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc src/main.c\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "main.c").write_text("int target;", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "Makefile"))
+            app._execute_command("tree")
+
+            app._handle_key("\n")
+            expanded_paths = [entry.relative_path for entry in app.tree_entries]
+            app.tree_cursor = expanded_paths.index("src/main.c")
+            app._handle_key("\n")
+
+        self.assertIn("src", app.tree_expanded)
+        self.assertEqual(app.path, root / "src" / "main.c")
+        self.assertEqual(app.buffer.lines, ["int target;"])
+        self.assertTrue(app.tree_visible)
+        self.assertFalse(app.tree_focused)
+
+    def test_tree_ctrl_w_toggles_focus_and_q_closes_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "main.c"))
+            app._execute_command("tree")
+
+            app._handle_key("\x17")
+            focused_after_first_toggle = app.tree_focused
+            app._handle_key("\x17")
+            focused_after_second_toggle = app.tree_focused
+            app._handle_key("q")
+
+        self.assertFalse(focused_after_first_toggle)
+        self.assertTrue(focused_after_second_toggle)
+        self.assertFalse(app.tree_visible)
+
+    def test_draw_tree_panel_keeps_editor_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "src").mkdir()
+            source = root / "src" / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            screen = FakeDrawScreen()
+            app = EditorApp(stdscr=screen, path=str(source))
+            app._execute_command("tree")
+
+            app._draw()
+
+        calls = [call for call in screen.calls if len(call) == 4]
+        self.assertTrue(any("Project" in call[2] for call in calls))
+        self.assertTrue(any("src/" in call[2] for call in calls))
+        self.assertTrue(any("int" in call[2] for call in calls if isinstance(call[1], int) and call[1] > 20))
 
     def test_command_open_uses_fuzzy_match_to_open_best_project_file(self):
         with tempfile.TemporaryDirectory() as tmp:

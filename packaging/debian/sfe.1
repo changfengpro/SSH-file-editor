@@ -14,9 +14,9 @@ save and quit commands while adding C syntax highlighting, completions,
 local header scanning, line numbers, smart indentation, undo/redo, and simple
 function signature help.
 .PP
-Version 0.4.0 adds project file workflow commands: tree view, fuzzy project
-open, recent files, build/run helpers, compiler error parsing, and navigation
-across both editor diagnostics and build diagnostics.
+Version 0.4.0 adds project file workflow commands: a toggleable project tree
+pane, fuzzy project open, recent files, build/run helpers, compiler error
+parsing, and navigation across both editor diagnostics and build diagnostics.
 .PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
@@ -72,7 +72,20 @@ Jump back after a definition jump.
 Move to the next or previous editor diagnostic or build error.
 .TP
 .B :tree
-Show files under the detected project root.
+Toggle the left project tree pane.
+.TP
+.B :tree open, :tree close
+Explicitly open or close the project tree pane.
+.TP
+.B Ctrl-W
+Switch focus between the project tree pane and the editor window.
+.TP
+.B Enter
+In the project tree, expand or collapse the selected directory, or open the
+selected file in the editor window.
+.TP
+.B q, Esc
+Close the project tree pane when it has focus.
 .TP
 .B :open PATTERN
 Fuzzy-open the best matching project file.

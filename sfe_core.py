@@ -545,6 +545,53 @@ class ProjectFiles:
     files: list[ProjectFile]
 
 
+@dataclass(frozen=True)
+class ProjectTreeEntry:
+    relative_path: str
+    display: str
+    is_dir: bool
+    depth: int = 0
+    expanded: bool = False
+
+
+def build_project_tree_entries(project_files: ProjectFiles | None, expanded_dirs: set[str]) -> list[ProjectTreeEntry]:
+    if project_files is None:
+        return []
+    file_paths = sorted(
+        path.strip("/")
+        for path in (file.relative_path.replace("\\", "/") for file in project_files.files)
+        if path.strip("/")
+    )
+    dirs: set[str] = set()
+    for relative_path in file_paths:
+        parts = relative_path.split("/")
+        for index in range(1, len(parts)):
+            dirs.add("/".join(parts[:index]))
+
+    def parent_of(relative_path: str) -> str:
+        return relative_path.rsplit("/", 1)[0] if "/" in relative_path else ""
+
+    def name_of(relative_path: str) -> str:
+        return relative_path.rsplit("/", 1)[-1]
+
+    entries: list[ProjectTreeEntry] = []
+
+    def add_children(parent: str, depth: int) -> None:
+        child_dirs = sorted(item for item in dirs if parent_of(item) == parent)
+        child_files = sorted(item for item in file_paths if parent_of(item) == parent)
+        indent = "  " * depth
+        for directory in child_dirs:
+            expanded = directory in expanded_dirs
+            entries.append(ProjectTreeEntry(directory, f"{indent}{name_of(directory)}/", True, depth, expanded))
+            if expanded:
+                add_children(directory, depth + 1)
+        for file_path in child_files:
+            entries.append(ProjectTreeEntry(file_path, f"{indent}{name_of(file_path)}", False, depth, False))
+
+    add_children("", 0)
+    return entries
+
+
 def find_project_root(start: Path, markers: tuple[str, ...] | list[str]) -> Path:
     current = Path(start)
     if current.is_file():

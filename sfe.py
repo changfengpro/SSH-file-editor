@@ -23,12 +23,14 @@ from sfe_core import (
     ProjectFiles,
     ProjectIndex,
     ProjectScanner,
+    ProjectTreeEntry,
     RecentFilesStore,
     SignatureHelpEngine,
     SyntaxHighlighter,
     TextBuffer,
     UndoManager,
     VimCommandProcessor,
+    build_project_tree_entries,
     find_project_root,
     fuzzy_match_files,
 )
@@ -45,6 +47,7 @@ CTRL_O = 15
 CTRL_F = 6
 CTRL_N = 14
 CTRL_P = 16
+CTRL_W = 23
 CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
@@ -166,6 +169,7 @@ class EditorApp:
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
         self.highlighter = SyntaxHighlighter()
+        self.syntax_attrs = {"plain": 0}
         self.project_root = self._find_project_root()
         self.header_index = self._load_header_index()
         self.project_index = self._load_project_index()
@@ -195,6 +199,12 @@ class EditorApp:
         self.list_title = ""
         self.list_lines: list[str] = []
         self.jump_stack: list[tuple[Path | None, int, int]] = []
+        self.tree_visible = False
+        self.tree_focused = False
+        self.tree_expanded: set[str] = set()
+        self.tree_entries: list[ProjectTreeEntry] = []
+        self.tree_cursor = 0
+        self.tree_row_offset = 0
 
     def run(self) -> None:
         curses.curs_set(1)
@@ -286,6 +296,8 @@ class EditorApp:
             return self._handle_command_key(key)
         if self.mode == "LIST":
             return self._handle_list_key(key)
+        if self.tree_visible and self.tree_focused:
+            return self._handle_tree_key(key)
         if self.mode == "NORMAL":
             return self._handle_normal_key(key)
         return self._handle_insert_key(key)
@@ -322,6 +334,9 @@ class EditorApp:
 
     def _handle_normal_key(self, key) -> bool:
         self.completions = []
+        if key in (CTRL_W, "\x17") and self.tree_visible:
+            self._toggle_tree_focus()
+            return False
         if key == ":":
             self.mode = "COMMAND"
             self.command_line = ""
@@ -402,6 +417,24 @@ class EditorApp:
     def _handle_list_key(self, key) -> bool:
         if key in (ESCAPE, "\x1b", "q"):
             self.mode = "NORMAL"
+            return False
+        return False
+
+    def _handle_tree_key(self, key) -> bool:
+        if key in (ESCAPE, "\x1b", "q"):
+            self._close_tree()
+            return False
+        if key in (CTRL_W, "\x17"):
+            self._toggle_tree_focus()
+            return False
+        if key in ("k", curses.KEY_UP, "KEY_UP"):
+            self._move_tree_cursor(-1)
+            return False
+        if key in ("j", curses.KEY_DOWN, "KEY_DOWN"):
+            self._move_tree_cursor(1)
+            return False
+        if key in ("\n", "\r"):
+            self._activate_tree_entry()
             return False
         return False
 
@@ -535,7 +568,7 @@ class EditorApp:
             self._show_diagnostics()
             return True
         if name == "tree":
-            self._show_project_tree()
+            self._toggle_project_tree(args[0] if args else "")
             return True
         if name == "open" and args:
             self._command_open(" ".join(args))
@@ -578,6 +611,19 @@ class EditorApp:
         self.status = f"Moved to line {line_no}"
         return True
 
+    def _toggle_project_tree(self, action: str = "") -> None:
+        action = action.lower()
+        if action in ("close", "hide", "off"):
+            self._close_tree()
+            return
+        if action in ("open", "show", "on"):
+            self._show_project_tree()
+            return
+        if self.tree_visible:
+            self._close_tree()
+            return
+        self._show_project_tree()
+
     def _show_symbols(self) -> None:
         index = ProjectScanner()._scan_file(self.path or Path("[buffer]"), self.buffer.lines)
         self.list_title = "Symbols"
@@ -601,13 +647,78 @@ class EditorApp:
 
     def _show_project_tree(self) -> None:
         self.project_files = self._load_project_files()
-        self.list_title = "Project"
-        if not self.project_files or not self.project_files.files:
-            self.list_lines = ["No project files"]
+        self.tree_visible = True
+        self.tree_focused = True
+        self.tree_cursor = 0
+        self.tree_row_offset = 0
+        self.mode = "NORMAL"
+        self._refresh_tree_entries()
+        if not self.tree_entries:
+            self.status = "Project tree: no project files"
         else:
-            self.list_lines = [file.relative_path for file in self.project_files.files]
-        self.mode = "LIST"
-        self.status = "Project: " + " | ".join(self.list_lines[:3])
+            self.status = "Project tree: Enter open/toggle | Ctrl-W switch | q close"
+
+    def _refresh_tree_entries(self, selected_path: str | None = None) -> None:
+        if selected_path is None and self.tree_entries and 0 <= self.tree_cursor < len(self.tree_entries):
+            selected_path = self.tree_entries[self.tree_cursor].relative_path
+        self.tree_entries = build_project_tree_entries(self.project_files, self.tree_expanded)
+        if not self.tree_entries:
+            self.tree_cursor = 0
+            self.tree_row_offset = 0
+            return
+        if selected_path:
+            for index, entry in enumerate(self.tree_entries):
+                if entry.relative_path == selected_path:
+                    self.tree_cursor = index
+                    break
+            else:
+                self.tree_cursor = min(self.tree_cursor, len(self.tree_entries) - 1)
+        else:
+            self.tree_cursor = min(self.tree_cursor, len(self.tree_entries) - 1)
+
+    def _move_tree_cursor(self, delta: int) -> None:
+        if not self.tree_entries:
+            return
+        self.tree_cursor = max(0, min(len(self.tree_entries) - 1, self.tree_cursor + delta))
+
+    def _activate_tree_entry(self) -> None:
+        if not self.tree_entries or not (0 <= self.tree_cursor < len(self.tree_entries)):
+            self.status = "Project tree: no item selected"
+            return
+        entry = self.tree_entries[self.tree_cursor]
+        if entry.is_dir:
+            if entry.relative_path in self.tree_expanded:
+                self.tree_expanded.remove(entry.relative_path)
+                self.status = f"Collapsed {entry.relative_path}/"
+            else:
+                self.tree_expanded.add(entry.relative_path)
+                self.status = f"Expanded {entry.relative_path}/"
+            self._refresh_tree_entries(entry.relative_path)
+            return
+        if self.project_root is None:
+            self.status = "No project root"
+            return
+        target = self.project_root / entry.relative_path
+        before = self.path
+        self._open_file(target)
+        if self.path == target:
+            self.tree_focused = False
+            self.project_files = self._load_project_files()
+            self._refresh_tree_entries(entry.relative_path)
+            self.status = f"Opened {entry.relative_path} | Ctrl-W tree"
+        elif before != self.path:
+            self.tree_focused = False
+
+    def _toggle_tree_focus(self) -> None:
+        if not self.tree_visible:
+            return
+        self.tree_focused = not self.tree_focused
+        self.status = "Tree focus" if self.tree_focused else "Editor focus"
+
+    def _close_tree(self) -> None:
+        self.tree_visible = False
+        self.tree_focused = False
+        self.status = "Project tree closed"
 
     def _command_open(self, query: str) -> None:
         self.project_files = self._load_project_files()
@@ -684,8 +795,10 @@ class EditorApp:
         self.list_lines = [
             "i/a/o/O insert | Esc normal | : command",
             ":w save | :w file save as | :q quit | :wq save quit",
-            ":e file open | :open fuzzy | :tree | :recent | :goto line",
-            ":make build | :run last output | :errors | :symbols | :diag | :set key value",
+            ":e file open | :open fuzzy | :tree toggle | :tree open/close | :recent",
+            "Tree: j/k move | Enter open/toggle dir | Ctrl-W switch | q close",
+            ":goto line | :symbols | :diag | :help",
+            ":make build | :run last output | :errors | :set key value",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
         ]
         self.mode = "LIST"
@@ -1049,18 +1162,29 @@ class EditorApp:
             self._draw_status(height, width)
             self.stdscr.refresh()
             return
+        editor_x = self._editor_origin_x(width)
+        editor_width = max(1, width - editor_x)
+        if self.tree_visible:
+            tree_width = max(1, editor_x - 1)
+            self._draw_tree(text_height, tree_width)
+            if tree_width < width:
+                for row in range(text_height):
+                    self.stdscr.addnstr(row, tree_width, "|", 1, curses.A_DIM)
         for screen_row in range(text_height):
             file_row = self.row_offset + screen_row
             if file_row >= len(self.buffer.lines):
                 break
             if gutter_width:
                 line_no = f"{file_row + 1:>{gutter_width - 1}} "
-                self.stdscr.addnstr(screen_row, 0, line_no, gutter_width, curses.A_DIM)
-            self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], width)
-        self._draw_completions(text_height, width, gutter_width)
+                self.stdscr.addnstr(screen_row, editor_x, line_no, gutter_width, curses.A_DIM)
+            self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], editor_width, editor_x)
+        self._draw_completions(text_height, editor_width, gutter_width, editor_x)
         self._draw_status(height, width)
         cursor_y = self.buffer.cursor_row - self.row_offset
         cursor_x = self._cursor_screen_x()
+        if self.tree_visible and self.tree_focused:
+            cursor_y = min(max(0, self.tree_cursor - self.tree_row_offset + 1), max(0, text_height - 1))
+            cursor_x = min(2, max(0, width - 1))
         if 0 <= cursor_y < text_height and 0 <= cursor_x < width:
             self.stdscr.move(cursor_y, cursor_x)
         self.stdscr.refresh()
@@ -1071,10 +1195,33 @@ class EditorApp:
         for index, line in enumerate(self.list_lines[: max(0, text_height - 1)], start=1):
             self.stdscr.addnstr(index, 0, line, width - 1)
 
+    def _draw_tree(self, text_height: int, width: int) -> None:
+        title = " Project "
+        attr = curses.A_REVERSE if self.tree_focused else curses.A_DIM
+        self.stdscr.addnstr(0, 0, title.ljust(width), max(0, width - 1), attr)
+        visible_rows = max(0, text_height - 1)
+        if self.tree_cursor < self.tree_row_offset:
+            self.tree_row_offset = self.tree_cursor
+        elif self.tree_cursor >= self.tree_row_offset + visible_rows:
+            self.tree_row_offset = max(0, self.tree_cursor - visible_rows + 1)
+        if not self.tree_entries:
+            self.stdscr.addnstr(1, 0, " No project files", max(0, width - 1), curses.A_DIM)
+            return
+        for screen_offset, entry in enumerate(self.tree_entries[self.tree_row_offset : self.tree_row_offset + visible_rows], start=1):
+            entry_index = self.tree_row_offset + screen_offset - 1
+            if entry.is_dir:
+                marker = "v" if entry.expanded else ">"
+            else:
+                marker = " "
+            line = f" {marker} {entry.display}"
+            row_attr = curses.A_REVERSE if self.tree_focused and entry_index == self.tree_cursor else curses.A_NORMAL
+            self.stdscr.addnstr(screen_offset, 0, line.ljust(width), max(0, width - 1), row_attr)
+
     def _draw_status(self, height: int, width: int) -> None:
         name = str(self.path) if self.path else "[No Name]"
         dirty = " +" if self.buffer.dirty else ""
-        left = f" {self.mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
+        mode = "TREE" if self.tree_visible and self.tree_focused else self.mode
+        left = f" {mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
         self.stdscr.addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line
@@ -1087,10 +1234,10 @@ class EditorApp:
             return ""
         return self.signature_help.signature_for(self.buffer.current_line(), self.buffer.cursor_col)
 
-    def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int) -> None:
+    def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int, x_offset: int = 0) -> None:
         visible_start = self.col_offset
         visible_end = self.col_offset + max(0, width - gutter_width - 1)
-        x = gutter_width
+        x = x_offset + gutter_width
         for token_start, token_text, attr in self._line_segments_with_attrs(screen_row, line):
             token_end = token_start + len(token_text)
             if token_end <= visible_start:
@@ -1100,7 +1247,7 @@ class EditorApp:
             start = max(visible_start, token_start)
             end = min(visible_end, token_end)
             text = token_text[start - token_start : end - token_start]
-            self.stdscr.addnstr(screen_row, x, text, max(0, width - x - 1), attr)
+            self.stdscr.addnstr(screen_row, x, text, max(0, x_offset + width - x - 1), attr)
             x += display_width(text)
 
     def _line_segments_with_attrs(self, screen_row: int, line: str) -> list[tuple[int, str, int]]:
@@ -1125,16 +1272,19 @@ class EditorApp:
             position += len(token.text)
         return segments
 
-    def _draw_completions(self, text_height: int, width: int, gutter_width: int) -> None:
+    def _draw_completions(self, text_height: int, width: int, gutter_width: int, x_offset: int = 0) -> None:
         if not self.completions:
             return
         start_y = min(max(0, self.buffer.cursor_row - self.row_offset + 1), max(0, text_height - len(self.completions)))
-        start_x = min(max(gutter_width, gutter_width + self.buffer.cursor_col - self.col_offset), max(gutter_width, width - 28))
+        start_x = min(
+            max(x_offset + gutter_width, x_offset + gutter_width + self.buffer.cursor_col - self.col_offset),
+            max(x_offset + gutter_width, x_offset + width - 28),
+        )
         for offset, item in enumerate(self.completions):
             attr = curses.A_REVERSE if offset == self.completion_index else curses.A_NORMAL
             source = item.source or item.kind
             label = f" {item.text:<18} {item.kind:<8} {source:<8} {item.detail:<22}"
-            self.stdscr.addnstr(start_y + offset, start_x, label, min(len(label), width - start_x - 1), attr)
+            self.stdscr.addnstr(start_y + offset, start_x, label, min(len(label), x_offset + width - start_x - 1), attr)
 
     def _scroll_to_cursor(self) -> None:
         height, width = self.stdscr.getmaxyx()
@@ -1144,7 +1294,7 @@ class EditorApp:
             self.row_offset = self.buffer.cursor_row
         elif self.buffer.cursor_row >= self.row_offset + text_height:
             self.row_offset = self.buffer.cursor_row - text_height + 1
-        visible_cols = max(1, width - gutter_width - 1)
+        visible_cols = max(1, self._editor_width(width) - gutter_width - 1)
         if self.buffer.cursor_col < self.col_offset:
             self.col_offset = self.buffer.cursor_col
         elif self.buffer.cursor_col >= self.col_offset + visible_cols:
@@ -1156,11 +1306,29 @@ class EditorApp:
         return max(3, len(str(len(self.buffer.lines))) + 2)
 
     def _text_origin_x(self) -> int:
-        return self._gutter_width()
+        return self._editor_origin_x() + self._gutter_width()
 
     def _cursor_screen_x(self) -> int:
         cursor_prefix = self.buffer.current_line()[: self.buffer.cursor_col]
         return self._text_origin_x() + display_width(cursor_prefix) - self.col_offset
+
+    def _editor_origin_x(self, width: int | None = None) -> int:
+        if not self.tree_visible:
+            return 0
+        if width is None:
+            if self.stdscr is None:
+                width = 80
+            else:
+                _, width = self.stdscr.getmaxyx()
+        return min(width - 1, self._tree_panel_width(width) + 1)
+
+    def _editor_width(self, width: int) -> int:
+        return max(1, width - self._editor_origin_x(width))
+
+    def _tree_panel_width(self, width: int) -> int:
+        if width < 40:
+            return max(12, width // 3)
+        return min(36, max(24, width // 3))
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

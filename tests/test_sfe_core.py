@@ -11,6 +11,7 @@ from sfe_core import (
     HeaderIndex,
     HeaderScanner,
     ProjectFileScanner,
+    ProjectTreeEntry,
     ProjectScanner,
     RecentFilesStore,
     SignatureHelpEngine,
@@ -18,6 +19,7 @@ from sfe_core import (
     TextBuffer,
     UndoManager,
     VimCommandProcessor,
+    build_project_tree_entries,
     find_project_root,
     fuzzy_match_files,
 )
@@ -438,6 +440,42 @@ class ProjectFileWorkflowTests(unittest.TestCase):
 
         paths = [item.relative_path for item in files.files]
         self.assertEqual(paths, ["README.md", "src/main.c"])
+
+    def test_project_tree_starts_collapsed_with_directories_before_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "include").mkdir()
+            (root / "README.md").write_text("# demo\n", encoding="utf-8")
+            (root / "src" / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (root / "include" / "app.h").write_text("#pragma once\n", encoding="utf-8")
+            files = ProjectFileScanner().scan(root)
+
+            entries = build_project_tree_entries(files, expanded_dirs=set())
+
+        self.assertEqual(
+            entries,
+            [
+                ProjectTreeEntry("include", "include/", True, 0, False),
+                ProjectTreeEntry("src", "src/", True, 0, False),
+                ProjectTreeEntry("README.md", "README.md", False, 0, False),
+            ],
+        )
+
+    def test_project_tree_expands_and_collapses_nested_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "lib").mkdir(parents=True)
+            (root / "src" / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (root / "src" / "lib" / "math.c").write_text("int add(void) { return 1; }\n", encoding="utf-8")
+            files = ProjectFileScanner().scan(root)
+
+            src_only = build_project_tree_entries(files, expanded_dirs={"src"})
+            nested = build_project_tree_entries(files, expanded_dirs={"src", "src/lib"})
+
+        self.assertEqual([entry.display for entry in src_only], ["src/", "  lib/", "  main.c"])
+        self.assertNotIn("src/lib/math.c", [entry.relative_path for entry in src_only])
+        self.assertEqual([entry.display for entry in nested], ["src/", "  lib/", "    math.c", "  main.c"])
 
     def test_project_scanners_do_not_ignore_project_inside_worktree_parent(self):
         with tempfile.TemporaryDirectory() as tmp:
