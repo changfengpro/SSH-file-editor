@@ -9,7 +9,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
-from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, VimCommandProcessor
+from sfe_core import CompletionEngine, SyntaxHighlighter, TextBuffer, UndoManager, VimCommandProcessor
 
 try:
     import curses
@@ -115,6 +115,7 @@ class EditorApp:
         self.completions = []
         self.completion_index = 0
         self.quit_warning = False
+        self.undo = UndoManager()
 
     def run(self) -> None:
         curses.curs_set(1)
@@ -219,11 +220,13 @@ class EditorApp:
             self.mode = "INSERT"
             return False
         if key == "o":
+            self._record_edit()
             self.buffer.move_end()
-            self.buffer.newline()
+            self.buffer.newline_with_indent(self.config.indent_width)
             self.mode = "INSERT"
             return False
         if key == "O":
+            self._record_edit()
             self.buffer.move_home()
             self.buffer.newline()
             self.buffer.move_up()
@@ -242,7 +245,18 @@ class EditorApp:
         elif key in ("$", curses.KEY_END, "KEY_END"):
             self.buffer.move_end()
         elif key == "x":
+            self._record_edit()
             self.buffer.delete()
+        elif key == "u":
+            if self.undo.undo(self.buffer):
+                self.status = "Undo"
+            else:
+                self.status = "Already at oldest change"
+        elif key in (18, "\x12"):
+            if self.undo.redo(self.buffer):
+                self.status = "Redo"
+            else:
+                self.status = "Already at newest change"
         elif key in (CTRL_F, "\x06", "/"):
             self._search()
         elif key in (CTRL_S, "\x13", CTRL_O, "\x0f") or is_function_key(key, 2):
@@ -291,19 +305,25 @@ class EditorApp:
         elif key in (curses.KEY_END, "KEY_END"):
             self.buffer.move_end()
         elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            self._record_edit()
             self.buffer.backspace()
         elif key in (curses.KEY_DC, "KEY_DC"):
+            self._record_edit()
             self.buffer.delete()
         elif self._is_completion_trigger(key):
             self._open_completions()
         elif key in ("\n", "\r"):
-            self.buffer.newline()
+            self._record_edit()
+            self.buffer.newline_with_indent(self.config.indent_width)
         elif self.config.auto_pair and isinstance(key, str) and key in PAIRS:
+            self._record_edit()
             self.buffer.insert_pair(key, PAIRS[key])
             self.quit_warning = False
         elif key in (TAB, "\t"):
-            self.buffer.indent()
+            self._record_edit()
+            self.buffer.indent(self.config.indent_width)
         elif isinstance(key, str) and key >= " " and key != "\x1b":
+            self._record_edit()
             self.buffer.insert(key)
             self.quit_warning = False
             if re_match_completion_char(key):
@@ -377,9 +397,13 @@ class EditorApp:
         if not self.completions:
             return
         item = self.completions[self.completion_index]
+        self._record_edit()
         self.buffer.replace_current_prefix(item.text)
         self.status = f"Completed {item.text} ({item.kind})"
         self.completions = []
+
+    def _record_edit(self) -> None:
+        self.undo.record(self.buffer)
 
     def _search(self) -> None:
         query = self._prompt("Search: ")
@@ -412,19 +436,19 @@ class EditorApp:
         self.stdscr.erase()
         height, width = self.stdscr.getmaxyx()
         text_height = max(1, height - 2)
-        gutter_width = len(str(len(self.buffer.lines))) + 2
+        gutter_width = self._gutter_width()
         for screen_row in range(text_height):
             file_row = self.row_offset + screen_row
             if file_row >= len(self.buffer.lines):
                 break
-            line_no = f"{file_row + 1:>{gutter_width - 1}} "
-            self.stdscr.addnstr(screen_row, 0, line_no, gutter_width, curses.A_DIM)
+            if gutter_width:
+                line_no = f"{file_row + 1:>{gutter_width - 1}} "
+                self.stdscr.addnstr(screen_row, 0, line_no, gutter_width, curses.A_DIM)
             self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], width)
         self._draw_completions(text_height, width, gutter_width)
         self._draw_status(height, width)
         cursor_y = self.buffer.cursor_row - self.row_offset
-        cursor_prefix = self.buffer.current_line()[: self.buffer.cursor_col]
-        cursor_x = gutter_width + display_width(cursor_prefix) - self.col_offset
+        cursor_x = self._cursor_screen_x()
         if 0 <= cursor_y < text_height and 0 <= cursor_x < width:
             self.stdscr.move(cursor_y, cursor_x)
         self.stdscr.refresh()
@@ -473,7 +497,7 @@ class EditorApp:
     def _scroll_to_cursor(self) -> None:
         height, width = self.stdscr.getmaxyx()
         text_height = max(1, height - 2)
-        gutter_width = len(str(len(self.buffer.lines))) + 2
+        gutter_width = self._gutter_width()
         if self.buffer.cursor_row < self.row_offset:
             self.row_offset = self.buffer.cursor_row
         elif self.buffer.cursor_row >= self.row_offset + text_height:
@@ -483,6 +507,18 @@ class EditorApp:
             self.col_offset = self.buffer.cursor_col
         elif self.buffer.cursor_col >= self.col_offset + visible_cols:
             self.col_offset = self.buffer.cursor_col - visible_cols + 1
+
+    def _gutter_width(self) -> int:
+        if not self.config.show_line_numbers:
+            return 0
+        return max(3, len(str(len(self.buffer.lines))) + 2)
+
+    def _text_origin_x(self) -> int:
+        return self._gutter_width()
+
+    def _cursor_screen_x(self) -> int:
+        cursor_prefix = self.buffer.current_line()[: self.buffer.cursor_col]
+        return self._text_origin_x() + display_width(cursor_prefix) - self.col_offset
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

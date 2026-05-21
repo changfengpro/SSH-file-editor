@@ -41,13 +41,13 @@ class EditorInsertModeTests(unittest.TestCase):
         sfe.curses = self.original_curses
 
     def test_insert_mode_indents_when_curses_reports_tab_as_integer(self):
-        app = EditorApp(stdscr=None, path=None)
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(indent_width=2))
         app.mode = "INSERT"
 
         app._handle_insert_key(9)
 
-        self.assertEqual(app.buffer.lines, ["    "])
-        self.assertEqual(app.buffer.cursor_col, 4)
+        self.assertEqual(app.buffer.lines, ["  "])
+        self.assertEqual(app.buffer.cursor_col, 2)
 
     def test_insert_mode_accepts_completion_with_tab(self):
         app = EditorApp(stdscr=None, path=None)
@@ -74,6 +74,17 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.lines, ["pri", ""])
         self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
         self.assertEqual(app.completions, [])
+
+    def test_insert_mode_newline_preserves_indent_after_open_brace(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(indent_width=4))
+        app.mode = "INSERT"
+        app.buffer.lines = ["    if (ok) {"]
+        app.buffer.cursor_col = len(app.buffer.current_line())
+
+        app._handle_insert_key("\n")
+
+        self.assertEqual(app.buffer.lines, ["    if (ok) {", "        "])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 8))
 
     def test_ctrl_space_opens_completion_from_integer_nul(self):
         app = EditorApp(stdscr=None, path=None)
@@ -204,6 +215,48 @@ class EditorInsertModeTests(unittest.TestCase):
 
         self.assertEqual(app.buffer.lines, ["{"])
         self.assertEqual(app.buffer.cursor_col, 1)
+
+
+class EditorLayoutTests(unittest.TestCase):
+    def test_line_number_width_respects_config(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(show_line_numbers=True))
+        app.buffer.lines = [""] * 120
+
+        self.assertEqual(app._gutter_width(), 5)
+
+        app_no_numbers = EditorApp(stdscr=None, path=None, config=EditorConfig(show_line_numbers=False))
+
+        self.assertEqual(app_no_numbers._gutter_width(), 0)
+
+    def test_cursor_screen_x_uses_display_width_and_gutter(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(show_line_numbers=True))
+        app.buffer.lines = ['printf("这是");']
+        app.buffer.cursor_col = len('printf("这是')
+
+        self.assertEqual(app._cursor_screen_x(), app._gutter_width() + display_width('printf("这是'))
+
+
+class EditorNormalModeTests(unittest.TestCase):
+    def setUp(self):
+        self.original_curses = sfe.curses
+        sfe.curses = FakeCurses
+
+    def tearDown(self):
+        sfe.curses = self.original_curses
+
+    def test_normal_mode_undo_and_redo(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app._handle_insert_key("a")
+        app.mode = "NORMAL"
+
+        app._handle_normal_key("u")
+
+        self.assertEqual(app.buffer.lines, [""])
+
+        app._handle_normal_key("\x12")
+
+        self.assertEqual(app.buffer.lines, ["a"])
 
 
 class DisplayWidthTests(unittest.TestCase):
