@@ -32,10 +32,10 @@ python3 --version
 
 ### 使用 deb 包安装
 
-下载 release 中的 `sfe_0.1.3_all.deb` 后安装：
+下载 release 中的 `sfe_0.1.4_all.deb` 后安装：
 
 ```bash
-sudo apt install ./sfe_0.1.3_all.deb
+sudo apt install ./sfe_0.1.4_all.deb
 ```
 
 安装后可以直接运行：
