@@ -62,11 +62,23 @@ class PackagingTests(unittest.TestCase):
             config = read_deb_member(deb_path, "data.tar.gz", "./etc/sfe/config.json")
             man_page = read_deb_member(deb_path, "data.tar.gz", "./usr/share/man/man1/sfe.1.gz")
             upgrade = read_deb_member(deb_path, "data.tar.gz", "./usr/bin/sfe-upgrade")
+            version = read_deb_member(deb_path, "data.tar.gz", "./usr/lib/sfe/VERSION")
 
         self.assertIn(b'"indent_width": 4', config)
         self.assertTrue(gzip.decompress(man_page).startswith(b".TH SFE 1"))
         self.assertTrue(upgrade.startswith(b"#!/bin/sh\n"))
         self.assertNotIn(b"\r\n", upgrade)
+        self.assertEqual(version.decode("utf-8").strip(), (ROOT / "VERSION").read_text(encoding="utf-8").strip())
+
+    def test_upgrade_script_sends_github_headers_and_user_agent(self):
+        upgrade = (ROOT / "packaging" / "debian" / "sfe-upgrade").read_text(encoding="utf-8")
+
+        self.assertIn("SFE_CURL_USER_AGENT", upgrade)
+        self.assertIn("SFE_LATEST_DEB_URL", upgrade)
+        self.assertIn("releases/latest/download/sfe_latest_all.deb", upgrade)
+        self.assertIn("User-Agent: $SFE_CURL_USER_AGENT", upgrade)
+        self.assertIn("Accept: application/vnd.github+json", upgrade)
+        self.assertIn("X-GitHub-Api-Version: 2022-11-28", upgrade)
 
 
 if __name__ == "__main__":

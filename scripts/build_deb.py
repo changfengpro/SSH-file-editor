@@ -109,6 +109,7 @@ def build_package(root, build_root=None, dist_dir=None):
             ("file", "./etc/sfe/config.json", _read_text_lf(root / "packaging" / "debian" / "config.json"), 0o644),
             ("file", "./usr/bin/sfe", _read_text_lf(root / "packaging" / "debian" / "sfe"), 0o755),
             ("file", "./usr/bin/sfe-upgrade", _read_text_lf(root / "packaging" / "debian" / "sfe-upgrade"), 0o755),
+            ("file", "./usr/lib/sfe/VERSION", _read_text_lf(root / "VERSION"), 0o644),
             ("file", "./usr/lib/sfe/sfe.py", root / "sfe.py", 0o644),
             ("file", "./usr/lib/sfe/sfe_core.py", root / "sfe_core.py", 0o644),
             ("file", "./usr/share/doc/sfe/README.md", root / "README.md", 0o644),

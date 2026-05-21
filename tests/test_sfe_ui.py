@@ -1,6 +1,8 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stdout
 
 import sfe
 from sfe import EditorApp, EditorConfig, display_width
@@ -457,6 +459,26 @@ class DisplayWidthTests(unittest.TestCase):
 
     def test_display_width_counts_ascii_as_one_column(self):
         self.assertEqual(display_width('printf("Hello, World!\\n");'), 26)
+
+
+class CliTests(unittest.TestCase):
+    def test_main_prints_version_with_long_flag(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = sfe.main(["--version"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue().strip(), f"sfe {sfe.read_version()}")
+
+    def test_main_prints_version_with_short_flag(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = sfe.main(["-v"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue().strip(), f"sfe {sfe.read_version()}")
 
 
 if __name__ == "__main__":

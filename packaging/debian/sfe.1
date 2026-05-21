@@ -4,6 +4,9 @@ sfe \- SSH-friendly terminal C code editor
 .SH SYNOPSIS
 .B sfe
 [\fIfile\fR]
+.br
+.B sfe
+[\fB--version\fR|\fB-v\fR]
 .SH DESCRIPTION
 .B sfe
 is a lightweight terminal editor for SSH sessions. It keeps common Vim-style
@@ -19,6 +22,10 @@ right side again jumps over the placeholder instead of inserting a duplicate.
 Insert-mode Backspace removes an empty pair such as {} in one step and removes
 one indentation level on otherwise empty indentation. Typing } on an indented
 blank line aligns it with the containing block.
+.SH OPTIONS
+.TP
+.B --version, -v
+Print the installed sfe version and exit.
 .SH COMMANDS
 .TP
 .B i
@@ -74,4 +81,6 @@ User configuration.
 .SH UPGRADE
 Run
 .B sfe-upgrade
-to download and install the latest GitHub release package.
+to download and install the latest GitHub release package. The helper sends
+GitHub API headers and a user agent to work better behind proxies and rate
+limit filters.

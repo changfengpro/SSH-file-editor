@@ -34,16 +34,22 @@ python3 --version
 
 ### 使用 deb 包安装
 
-下载 release 中的 `sfe_0.2.2_all.deb` 后安装：
+下载 release 中的 `sfe_0.2.3_all.deb` 后安装：
 
 ```bash
-sudo apt install ./sfe_0.2.2_all.deb
+sudo apt install ./sfe_0.2.3_all.deb
 ```
 
 安装后可以直接运行：
 
 ```bash
 sfe hello.c
+```
+
+查看版本：
+
+```bash
+sfe --version
 ```
 
 卸载：

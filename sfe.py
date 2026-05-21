@@ -42,6 +42,17 @@ DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
 
 
+def read_version() -> str:
+    for candidate in (Path(__file__).with_name("VERSION"), Path.cwd() / "VERSION"):
+        try:
+            version = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if version:
+            return version
+    return "unknown"
+
+
 @dataclass(frozen=True)
 class EditorConfig:
     auto_pair: bool = True
@@ -670,6 +681,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         prog="sfe",
         description="Small SSH-friendly terminal code editor with C completions.",
     )
+    parser.add_argument("--version", "-v", action="store_true", help="show version and exit")
     parser.add_argument("file", nargs="?", help="file to edit")
     return parser.parse_args(argv)
 
@@ -806,6 +818,9 @@ def is_function_key(key, number: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.version:
+        print(f"sfe {read_version()}")
+        return 0
     if curses is None:
         print("sfe requires Python curses. It is available on the target Linux SSH server.", file=sys.stderr)
         return 1

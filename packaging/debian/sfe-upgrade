@@ -2,6 +2,8 @@
 set -eu
 
 REPO_API="${SFE_RELEASE_API:-https://api.github.com/repos/changfengpro/SSH-file-editor/releases/latest}"
+SFE_LATEST_DEB_URL="${SFE_LATEST_DEB_URL:-https://github.com/changfengpro/SSH-file-editor/releases/latest/download/sfe_latest_all.deb}"
+SFE_CURL_USER_AGENT="${SFE_CURL_USER_AGENT:-sfe-upgrade}"
 
 usage() {
     cat <<'USAGE'
@@ -28,8 +30,37 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+deb_name=${SFE_LATEST_DEB_URL##*/}
+deb_path="$tmpdir/$deb_name"
+
+echo "Downloading $deb_name"
+echo "URL: $SFE_LATEST_DEB_URL"
+if curl -fL \
+    -H "User-Agent: $SFE_CURL_USER_AGENT" \
+    "$SFE_LATEST_DEB_URL" -o "$deb_path"; then
+    echo "SHA256:"
+    sha256sum "$deb_path"
+
+    echo "Installing $deb_name"
+    sudo apt install "$deb_path"
+    exit 0
+fi
+
+echo "sfe-upgrade: direct latest package download failed; trying GitHub release API" >&2
+
 release_json="$tmpdir/release.json"
-curl -fsSL "$REPO_API" -o "$release_json"
+if ! curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "User-Agent: $SFE_CURL_USER_AGENT" \
+    "$REPO_API" -o "$release_json"; then
+    cat >&2 <<'ERROR'
+sfe-upgrade: failed to fetch the latest release metadata from GitHub.
+Check your network/proxy settings, or try again later if GitHub rate limited
+the request. You can also download the .deb from the GitHub Releases page.
+ERROR
+    exit 1
+fi
 
 deb_url=$(python3 - "$release_json" <<'PY'
 import json
@@ -54,7 +85,12 @@ deb_path="$tmpdir/$deb_name"
 
 echo "Downloading $deb_name"
 echo "URL: $deb_url"
-curl -fL "$deb_url" -o "$deb_path"
+if ! curl -fL \
+    -H "User-Agent: $SFE_CURL_USER_AGENT" \
+    "$deb_url" -o "$deb_path"; then
+    echo "sfe-upgrade: failed to download $deb_name" >&2
+    exit 1
+fi
 
 echo "SHA256:"
 sha256sum "$deb_path"
