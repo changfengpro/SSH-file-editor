@@ -10,6 +10,11 @@ is a lightweight terminal editor for SSH sessions. It keeps common Vim-style
 save and quit commands while adding C syntax highlighting, completions,
 local header scanning, line numbers, smart indentation, undo/redo, and simple
 function signature help.
+.PP
+When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
+right side as a dim placeholder. Pressing Enter between an automatic {} pair
+keeps the closing brace aligned with the opening brace, and typing the matching
+right side again jumps over the placeholder instead of inserting a duplicate.
 .SH COMMANDS
 .TP
 .B i

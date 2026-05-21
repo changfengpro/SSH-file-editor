@@ -8,6 +8,8 @@ from sfe import EditorApp, EditorConfig, display_width
 
 class FakeCurses:
     error = RuntimeError
+    A_DIM = 1
+    A_NORMAL = 0
     KEY_LEFT = 260
     KEY_RIGHT = 261
     KEY_UP = 259
@@ -32,6 +34,14 @@ class FakeInputScreen:
 
     def timeout(self, value):
         self.timeouts.append(value)
+
+
+class FakeDrawScreen:
+    def __init__(self):
+        self.calls = []
+
+    def addnstr(self, row, col, text, max_width, attr=0):
+        self.calls.append((row, col, text[:max_width], attr))
 
 
 class EditorInsertModeTests(unittest.TestCase):
@@ -197,6 +207,20 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.lines, ["{}"])
         self.assertEqual(app.buffer.cursor_col, 1)
 
+    def test_insert_mode_enter_between_auto_braces_aligns_closer_with_opener(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(indent_width=4))
+        app.mode = "INSERT"
+        app.buffer.lines = ["void clon()"]
+        app.buffer.cursor_row = 0
+        app.buffer.cursor_col = len(app.buffer.current_line())
+
+        app._handle_insert_key("\n")
+        app._handle_insert_key("{")
+        app._handle_insert_key("\n")
+
+        self.assertEqual(app.buffer.lines, ["void clon()", "{", "    ", "}"])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 4))
+
     def test_insert_mode_auto_closes_parentheses_brackets_and_quotes(self):
         cases = [("(", "()"), ("[", "[]"), ('"', '""'), ("'", "''")]
         for opener, expected in cases:
@@ -209,6 +233,60 @@ class EditorInsertModeTests(unittest.TestCase):
                 self.assertEqual(app.buffer.lines, [expected])
                 self.assertEqual(app.buffer.cursor_col, 1)
 
+    def test_insert_mode_closing_pair_key_jumps_over_auto_placeholder(self):
+        cases = [("(", ")"), ("[", "]"), ("{", "}"), ('"', '"'), ("'", "'")]
+        for opener, closer in cases:
+            with self.subTest(opener=opener):
+                app = EditorApp(stdscr=None, path=None)
+                app.mode = "INSERT"
+
+                app._handle_insert_key(opener)
+                app._handle_insert_key(closer)
+
+                self.assertEqual(app.buffer.lines, [opener + closer])
+                self.assertEqual(app.buffer.cursor_col, 2)
+
+    def test_insert_mode_pair_placeholder_moves_after_inner_text(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+
+        for key in ["(", "a", ")"]:
+            app._handle_insert_key(key)
+
+        self.assertEqual(app.buffer.lines, ["(a)"])
+        self.assertEqual(app.buffer.cursor_col, 3)
+
+    def test_insert_mode_nested_pair_placeholders_jump_in_order(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+
+        for key in ["(", "(", ")", ")"]:
+            app._handle_insert_key(key)
+
+        self.assertEqual(app.buffer.lines, ["(())"])
+        self.assertEqual(app.buffer.cursor_col, 4)
+
+    def test_insert_mode_pair_placeholder_moves_after_completion_accept(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+
+        for key in ["(", "p", "r", "\t", ")"]:
+            app._handle_insert_key(key)
+
+        self.assertEqual(app.buffer.lines, ["(printf)"])
+        self.assertEqual(app.buffer.cursor_col, 8)
+
+    def test_insert_mode_keeps_real_closing_char_when_no_placeholder_exists(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["("]
+        app.buffer.cursor_col = 1
+
+        app._handle_insert_key(")")
+
+        self.assertEqual(app.buffer.lines, ["()"])
+        self.assertEqual(app.buffer.cursor_col, 2)
+
     def test_insert_mode_respects_disabled_auto_pair_config(self):
         app = EditorApp(stdscr=None, path=None, config=EditorConfig(auto_pair=False))
         app.mode = "INSERT"
@@ -220,6 +298,23 @@ class EditorInsertModeTests(unittest.TestCase):
 
 
 class EditorLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.original_curses = sfe.curses
+        sfe.curses = FakeCurses
+        self.original_colors = {
+            "plain": 0,
+            "keyword": 10,
+            "preprocessor": 20,
+            "function": 30,
+            "string": 40,
+            "number": 50,
+            "comment": 60,
+            "placeholder": 70,
+        }
+
+    def tearDown(self):
+        sfe.curses = self.original_curses
+
     def test_line_number_width_respects_config(self):
         app = EditorApp(stdscr=None, path=None, config=EditorConfig(show_line_numbers=True))
         app.buffer.lines = [""] * 120
@@ -257,6 +352,18 @@ class EditorLayoutTests(unittest.TestCase):
             app._open_completions()
 
         self.assertEqual(app.completions[0].text, "mathx.h")
+
+    def test_auto_pair_placeholder_draws_dimmed_closer(self):
+        screen = FakeDrawScreen()
+        app = EditorApp(stdscr=screen, path=None)
+        app.syntax_attrs = dict(self.original_colors)
+        app.mode = "INSERT"
+
+        app._handle_insert_key("(")
+        app._draw_code_line(0, 0, app.buffer.current_line(), 20)
+
+        self.assertIn(("(", 0), [(call[2], call[3]) for call in screen.calls])
+        self.assertIn((")", FakeCurses.A_DIM), [(call[2], call[3]) for call in screen.calls])
 
 
 class EditorNormalModeTests(unittest.TestCase):

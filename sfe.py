@@ -36,6 +36,7 @@ CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
+PAIR_CLOSERS = set(PAIRS.values())
 SYSTEM_CONFIG_PATH = Path("/etc/sfe/config.json")
 DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
@@ -127,6 +128,7 @@ class EditorApp:
         self.completion_index = 0
         self.quit_warning = False
         self.undo = UndoManager()
+        self.auto_pair_placeholders: list[tuple[int, int, str]] = []
 
     def run(self) -> None:
         curses.curs_set(1)
@@ -310,37 +312,52 @@ class EditorApp:
             self.completions = []
         if key in (curses.KEY_LEFT, "KEY_LEFT"):
             self.buffer.move_left()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_RIGHT, "KEY_RIGHT"):
             self.buffer.move_right()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_UP, "KEY_UP"):
             self.buffer.move_up()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_DOWN, "KEY_DOWN"):
             self.buffer.move_down()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_HOME, "KEY_HOME"):
             self.buffer.move_home()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_END, "KEY_END"):
             self.buffer.move_end()
+            self._drop_stale_placeholders()
         elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
             self._record_edit()
             self.buffer.backspace()
+            self._clear_placeholders()
         elif key in (curses.KEY_DC, "KEY_DC"):
             self._record_edit()
             self.buffer.delete()
+            self._clear_placeholders()
         elif self._is_completion_trigger(key):
             self._open_completions()
         elif key in ("\n", "\r"):
             self._record_edit()
             self.buffer.newline_with_indent(self.config.indent_width)
+            self._clear_placeholders()
+        elif self.config.auto_pair and isinstance(key, str) and key in PAIR_CLOSERS and self._jump_over_pair_placeholder(key):
+            self.quit_warning = False
         elif self.config.auto_pair and isinstance(key, str) and key in PAIRS:
             self._record_edit()
             self.buffer.insert_pair(key, PAIRS[key])
+            self._shift_placeholders_after_edit(2)
+            self._add_pair_placeholder(PAIRS[key])
             self.quit_warning = False
         elif key in (TAB, "\t"):
             self._record_edit()
             self.buffer.indent(self.config.indent_width)
+            self._clear_placeholders()
         elif isinstance(key, str) and key >= " " and key != "\x1b":
             self._record_edit()
             self.buffer.insert(key)
+            self._shift_placeholders_after_edit(1)
             self.quit_warning = False
             if re_match_completion_char(key):
                 self._open_completions(show_status=False)
@@ -414,13 +431,61 @@ class EditorApp:
         if not self.completions:
             return
         item = self.completions[self.completion_index]
+        old_prefix_len = len(self.buffer.current_prefix())
         self._record_edit()
         self.buffer.replace_current_prefix(item.text)
+        self._shift_placeholders_after_edit(len(item.text) - old_prefix_len)
         self.status = f"Completed {item.text} ({item.kind})"
         self.completions = []
 
     def _record_edit(self) -> None:
         self.undo.record(self.buffer)
+
+    def _add_pair_placeholder(self, closer: str) -> None:
+        self.auto_pair_placeholders.append((self.buffer.cursor_row, self.buffer.cursor_col, closer))
+
+    def _clear_placeholders(self) -> None:
+        self.auto_pair_placeholders = []
+
+    def _drop_stale_placeholders(self) -> None:
+        self.auto_pair_placeholders = [placeholder for placeholder in self.auto_pair_placeholders if self._placeholder_matches(placeholder)]
+
+    def _shift_placeholders_after_edit(self, delta: int) -> None:
+        if delta == 0:
+            return
+        row = self.buffer.cursor_row
+        col = self.buffer.cursor_col
+        shifted: list[tuple[int, int, str]] = []
+        for placeholder_row, placeholder_col, closer in self.auto_pair_placeholders:
+            if placeholder_row == row and placeholder_col >= col - delta:
+                shifted.append((placeholder_row, placeholder_col + delta, closer))
+            else:
+                shifted.append((placeholder_row, placeholder_col, closer))
+        self.auto_pair_placeholders = shifted
+        self._drop_stale_placeholders()
+
+    def _placeholder_matches(self, placeholder: tuple[int, int, str]) -> bool:
+        row, col, closer = placeholder
+        if row < 0 or row >= len(self.buffer.lines):
+            return False
+        line = self.buffer.lines[row]
+        return 0 <= col < len(line) and line[col] == closer
+
+    def _placeholder_at_cursor(self, closer: str) -> tuple[int, int, str] | None:
+        self._drop_stale_placeholders()
+        target = (self.buffer.cursor_row, self.buffer.cursor_col, closer)
+        for placeholder in self.auto_pair_placeholders:
+            if placeholder == target:
+                return placeholder
+        return None
+
+    def _jump_over_pair_placeholder(self, closer: str) -> bool:
+        placeholder = self._placeholder_at_cursor(closer)
+        if placeholder is None:
+            return False
+        self.buffer.move_right()
+        self.auto_pair_placeholders.remove(placeholder)
+        return True
 
     def _search(self) -> None:
         query = self._prompt("Search: ")
@@ -490,21 +555,39 @@ class EditorApp:
         visible_start = self.col_offset
         visible_end = self.col_offset + max(0, width - gutter_width - 1)
         x = gutter_width
-        position = 0
-        for token in self.highlighter.tokenize(line):
-            token_start = position
-            token_end = position + len(token.text)
-            position = token_end
+        for token_start, token_text, attr in self._line_segments_with_attrs(screen_row, line):
+            token_end = token_start + len(token_text)
             if token_end <= visible_start:
                 continue
             if token_start >= visible_end:
                 break
             start = max(visible_start, token_start)
             end = min(visible_end, token_end)
-            text = token.text[start - token_start : end - token_start]
-            attr = self.syntax_attrs.get(token.kind, curses.A_NORMAL)
+            text = token_text[start - token_start : end - token_start]
             self.stdscr.addnstr(screen_row, x, text, max(0, width - x - 1), attr)
             x += display_width(text)
+
+    def _line_segments_with_attrs(self, screen_row: int, line: str) -> list[tuple[int, str, int]]:
+        file_row = self.row_offset + screen_row
+        placeholder_cols = {
+            col
+            for row, col, closer in self.auto_pair_placeholders
+            if row == file_row and 0 <= col < len(line) and line[col] == closer
+        }
+        segments: list[tuple[int, str, int]] = []
+        position = 0
+        for token in self.highlighter.tokenize(line):
+            token_attr = self.syntax_attrs.get(token.kind, curses.A_NORMAL)
+            for offset, char in enumerate(token.text):
+                col = position + offset
+                attr = token_attr | curses.A_DIM if col in placeholder_cols else token_attr
+                if segments and segments[-1][0] + len(segments[-1][1]) == col and segments[-1][2] == attr:
+                    start, text, _ = segments[-1]
+                    segments[-1] = (start, text + char, attr)
+                else:
+                    segments.append((col, char, attr))
+            position += len(token.text)
+        return segments
 
     def _draw_completions(self, text_height: int, width: int, gutter_width: int) -> None:
         if not self.completions:

@@ -106,7 +106,11 @@ class TextBuffer:
         indent = leading + extra
         after = line[self.cursor_col :]
         self.lines[self.cursor_row] = before
-        self.lines.insert(self.cursor_row + 1, indent + after)
+        if before.rstrip().endswith("{") and after.lstrip().startswith("}"):
+            self.lines.insert(self.cursor_row + 1, indent)
+            self.lines.insert(self.cursor_row + 2, leading + after.lstrip())
+        else:
+            self.lines.insert(self.cursor_row + 1, indent + after)
         self.cursor_row += 1
         self.cursor_col = len(indent)
         self.dirty = True

@@ -71,6 +71,15 @@ class TextBufferTests(unittest.TestCase):
         self.assertEqual(buf.lines, ["    if (ok) {", "        "])
         self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 8))
 
+    def test_newline_between_brace_pair_aligns_closing_brace_with_opener(self):
+        buf = TextBuffer(["    if (ok) {}"])
+        buf.cursor_col = len("    if (ok) {")
+
+        buf.newline_with_indent(indent_width=4)
+
+        self.assertEqual(buf.lines, ["    if (ok) {", "        ", "    }"])
+        self.assertEqual((buf.cursor_row, buf.cursor_col), (1, 8))
+
     def test_newline_preserves_indent_without_open_brace(self):
         buf = TextBuffer(["    return value;"])
         buf.cursor_col = len(buf.current_line())
