@@ -31,6 +31,11 @@ until completion, definition jump, tree, or fuzzy-open commands need them. This
 makes opening a file in a large project faster while keeping project features
 available on demand.
 .PP
+Version 0.4.6 makes the launcher prefer /usr/bin/python3 with bytecode writes
+and Python site initialization disabled for faster startup, while keeping the
+bundled Python runtime as an automatic fallback when system Python or curses is
+unavailable.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching

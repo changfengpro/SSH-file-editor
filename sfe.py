@@ -1540,12 +1540,33 @@ def is_function_key(key, number: int) -> bool:
     return key_f0 is not None and key == key_f0 + number
 
 
+def _reexec_with_bundled_python_if_available(argv: list[str]) -> bool:
+    sfe_home = Path(os.environ.get("SFE_HOME", Path(__file__).resolve().parent))
+    bundled_python = Path(os.environ.get("SFE_BUNDLED_PYTHON", sfe_home / "python" / "bin" / "python3"))
+    if not bundled_python.exists() or sys.executable == str(bundled_python):
+        return False
+    env = dict(os.environ)
+    native_lib = sfe_home / "python" / "lib" / "native"
+    terminfo = sfe_home / "python" / "share" / "terminfo"
+    if native_lib.is_dir():
+        existing = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = f"{native_lib}:{existing}" if existing else str(native_lib)
+    if terminfo.is_dir():
+        existing = env.get("TERMINFO_DIRS")
+        env["TERMINFO_DIRS"] = f"{terminfo}:{existing}" if existing else f"{terminfo}:/usr/share/terminfo:/lib/terminfo"
+    env["SFE_PREFER_BUNDLED_PYTHON"] = "1"
+    os.execve(str(bundled_python), [str(bundled_python), "-B", "-S", str(sfe_home / "sfe.py"), *argv], env)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.version:
         print(f"sfe {read_version()}")
         return 0
     if curses is None:
+        if _reexec_with_bundled_python_if_available(sys.argv[1:] if argv is None else argv):
+            return 0
         print("sfe requires Python curses. It is available on the target Linux SSH server.", file=sys.stderr)
         return 1
     if not os.environ.get("TERM"):

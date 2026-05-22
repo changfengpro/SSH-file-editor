@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import tempfile
 import unittest
@@ -948,6 +949,47 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output.getvalue().strip(), f"sfe {sfe.read_version()}")
+
+    def test_main_reexecs_bundled_python_when_curses_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundled = root / "python" / "bin" / "python3"
+            native = root / "python" / "lib" / "native"
+            terminfo = root / "python" / "share" / "terminfo"
+            bundled.parent.mkdir(parents=True)
+            native.mkdir(parents=True)
+            terminfo.mkdir(parents=True)
+            bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+            original_curses = sfe.curses
+            sfe.curses = None
+            captured = {}
+
+            def fake_execve(executable, argv, env):
+                captured["executable"] = executable
+                captured["argv"] = argv
+                captured["env"] = env
+                raise SystemExit(99)
+
+            with (
+                mock.patch.object(os, "execve", side_effect=fake_execve),
+                mock.patch.dict(
+                    os.environ,
+                    {"SFE_HOME": str(root), "SFE_SYSTEM_PYTHON": "/usr/bin/python3"},
+                    clear=False,
+                ),
+            ):
+                try:
+                    with self.assertRaises(SystemExit) as raised:
+                        sfe.main(["hello.c"])
+                    self.assertEqual(raised.exception.code, 99)
+                finally:
+                    sfe.curses = original_curses
+
+        self.assertEqual(captured["executable"], str(bundled))
+        self.assertEqual(captured["argv"][:3], [str(bundled), "-B", "-S"])
+        self.assertEqual(captured["argv"][-1], "hello.c")
+        self.assertIn(str(native), captured["env"]["LD_LIBRARY_PATH"])
+        self.assertIn(str(terminfo), captured["env"]["TERMINFO_DIRS"])
 
 
 if __name__ == "__main__":

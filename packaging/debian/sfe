@@ -1,10 +1,18 @@
 #!/bin/sh
 SFE_HOME="${SFE_HOME:-/usr/lib/sfe}"
-SFE_PYTHON="${SFE_PYTHON:-/usr/lib/sfe/python/bin/python3}"
+SFE_SYSTEM_PYTHON="${SFE_SYSTEM_PYTHON:-/usr/bin/python3}"
+SFE_BUNDLED_PYTHON="${SFE_BUNDLED_PYTHON:-$SFE_HOME/python/bin/python3}"
 SFE_NATIVE_LIB="$SFE_HOME/python/lib/native"
 SFE_TERMINFO="$SFE_HOME/python/share/terminfo"
+SFE_SELECTED_PYTHON="$SFE_SYSTEM_PYTHON"
+SFE_USES_BUNDLED_PYTHON=0
 
-if [ -d "$SFE_NATIVE_LIB" ]; then
+if [ "${SFE_PREFER_BUNDLED_PYTHON:-0}" = "1" ] || [ ! -x "$SFE_SYSTEM_PYTHON" ]; then
+    SFE_SELECTED_PYTHON="$SFE_BUNDLED_PYTHON"
+    SFE_USES_BUNDLED_PYTHON=1
+fi
+
+if [ "$SFE_USES_BUNDLED_PYTHON" = "1" ] && [ -d "$SFE_NATIVE_LIB" ]; then
     if [ -n "${LD_LIBRARY_PATH:-}" ]; then
         export LD_LIBRARY_PATH="$SFE_NATIVE_LIB:$LD_LIBRARY_PATH"
     else
@@ -20,4 +28,4 @@ if [ -d "$SFE_TERMINFO" ]; then
     fi
 fi
 
-exec "$SFE_PYTHON" "$SFE_HOME/sfe.py" "$@"
+exec "$SFE_SELECTED_PYTHON" -B -S "$SFE_HOME/sfe.py" "$@"

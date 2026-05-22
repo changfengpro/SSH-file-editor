@@ -122,9 +122,10 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Speed up opening files by deferring local header scans, project symbol indexing, and project file tree indexing until those features are used.
-          - Keep completion, Ctrl-] definition jump, :tree, and :open behavior intact through on-demand index loading.
-          - Add regression coverage that prevents startup from synchronously scanning headers, project symbols, or project files.
+          - Speed up installed startup by preferring /usr/bin/python3 -B -S instead of cold-starting the bundled Python runtime every time.
+          - Keep the bundled Python runtime as an automatic fallback when system Python or curses is unavailable.
+          - Only add bundled native library paths when the bundled runtime is actually selected.
+          - Add regression coverage for the launcher fast path and bundled fallback behavior.
 
           ## Verification
           - python3 -m unittest discover -s tests

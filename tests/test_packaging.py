@@ -103,13 +103,21 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(stdlib, b"# fake stdlib\n")
         self.assertEqual(terminfo, b"fake terminfo\n")
 
-    def test_launcher_uses_bundled_python_runtime(self):
+    def test_launcher_prefers_system_python_with_bundled_fallback(self):
         launcher = (ROOT / "packaging" / "debian" / "sfe").read_text(encoding="utf-8")
 
-        self.assertIn("/usr/lib/sfe/python/bin/python3", launcher)
-        self.assertNotIn("command -v python3", launcher)
+        self.assertIn('SFE_SYSTEM_PYTHON="${SFE_SYSTEM_PYTHON:-/usr/bin/python3}"', launcher)
+        self.assertIn('SFE_BUNDLED_PYTHON="${SFE_BUNDLED_PYTHON:-$SFE_HOME/python/bin/python3}"', launcher)
+        self.assertIn('[ ! -x "$SFE_SYSTEM_PYTHON" ]', launcher)
+        self.assertIn('SFE_PREFER_BUNDLED_PYTHON', launcher)
         self.assertIn("TERMINFO_DIRS", launcher)
-        self.assertIn('exec "$SFE_PYTHON"', launcher)
+        self.assertIn('exec "$SFE_SELECTED_PYTHON" -B -S "$SFE_HOME/sfe.py" "$@"', launcher)
+
+    def test_launcher_only_adds_bundled_native_libs_for_bundled_python(self):
+        launcher = (ROOT / "packaging" / "debian" / "sfe").read_text(encoding="utf-8")
+
+        self.assertIn('SFE_USES_BUNDLED_PYTHON=1', launcher)
+        self.assertIn('if [ "$SFE_USES_BUNDLED_PYTHON" = "1" ] && [ -d "$SFE_NATIVE_LIB" ]; then', launcher)
 
     def test_built_deb_contains_config_man_page_and_upgrade_script(self):
         with tempfile.TemporaryDirectory() as tmp:
