@@ -2,6 +2,7 @@ import io
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from contextlib import redirect_stdout
 
@@ -423,6 +424,45 @@ class EditorLayoutTests(unittest.TestCase):
         app.buffer.cursor_col = len(app.buffer.current_line())
 
         self.assertEqual(app._signature_help_text(), "int printf(const char *format, ...)")
+
+    def test_startup_defers_project_and_header_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(sfe.HeaderScanner, "scan", side_effect=AssertionError("header scan during startup")),
+                mock.patch.object(sfe.ProjectScanner, "scan", side_effect=AssertionError("project scan during startup")),
+                mock.patch.object(sfe.ProjectFileScanner, "scan", side_effect=AssertionError("file scan during startup")),
+            ):
+                app = EditorApp(stdscr=None, path=str(source))
+
+        self.assertEqual(app.path, source)
+        self.assertEqual(app.buffer.lines[0], "int main(void) { return 0; }")
+
+    def test_completion_loads_lazy_project_and_header_indexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "mathx.h").write_text("#define LIMIT 16\n", encoding="utf-8")
+            (root / "helper.c").write_text("int project_add(int a, int b) {\n    return a + b;\n}\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(root / "main.c"))
+            app.mode = "INSERT"
+
+            app.buffer.lines = ['#include "ma']
+            app.buffer.cursor_col = len(app.buffer.current_line())
+            app._open_completions()
+            header_names = [item.text for item in app.completions]
+
+            app.buffer.lines = ["project_"]
+            app.buffer.cursor_col = len(app.buffer.current_line())
+            app._open_completions()
+            item_by_text = {item.text: item for item in app.completions}
+
+        self.assertIn("mathx.h", header_names)
+        self.assertEqual(item_by_text["project_add"].source, "project")
 
     def test_completion_uses_local_header_index_from_file_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -122,13 +122,9 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Fix the bundled Python runtime requiring GLIBC_2.38 on Ubuntu 22.04 hosts.
-          - Bundle a private Python runtime inside the Debian package.
-          - Remove apt dependency metadata so local package installation does not download dependencies.
-          - Publish both amd64 and arm64 Debian packages.
-          - Build runtime packages on Ubuntu 22.04 and reject GLIBC symbols newer than 2.35.
-          - Install upgrades with dpkg instead of apt dependency resolution.
-          - Keep sfe_latest_all.deb as a compatibility alias for older upgrade scripts.
+          - Speed up opening files by deferring local header scans, project symbol indexing, and project file tree indexing until those features are used.
+          - Keep completion, Ctrl-] definition jump, :tree, and :open behavior intact through on-demand index loading.
+          - Add regression coverage that prevents startup from synchronously scanning headers, project symbols, or project files.
 
           ## Verification
           - python3 -m unittest discover -s tests

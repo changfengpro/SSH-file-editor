@@ -171,9 +171,12 @@ class EditorApp:
         self.highlighter = SyntaxHighlighter()
         self.syntax_attrs = {"plain": 0}
         self.project_root = self._find_project_root()
-        self.header_index = self._load_header_index()
-        self.project_index = self._load_project_index()
-        self.project_files = self._load_project_files()
+        self.header_index = HeaderIndex(set(), [])
+        self.project_index: ProjectIndex | None = None
+        self.project_files: ProjectFiles | None = None
+        self.header_index_loaded = False
+        self.project_index_loaded = False
+        self.project_files_loaded = False
         self.diagnostic_engine = CDiagnosticEngine()
         self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
         self.build_diagnostics: list[BuildDiagnostic] = []
@@ -184,7 +187,7 @@ class EditorApp:
         self.recent_store_path = self._default_recent_store_path()
         if self.path is not None and self.stdscr is not None:
             self._remember_recent_file(self.path)
-        self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
+        self.signature_help = SignatureHelpEngine.from_header_index(None)
         self.row_offset = 0
         self.col_offset = 0
         self.mode = "NORMAL"
@@ -266,13 +269,42 @@ class EditorApp:
             return None
         return ProjectFileScanner().scan(self.project_root)
 
+    def _invalidate_file_context_indexes(self) -> None:
+        self.header_index = HeaderIndex(set(), [])
+        self.project_index = None
+        self.project_files = None
+        self.header_index_loaded = False
+        self.project_index_loaded = False
+        self.project_files_loaded = False
+        self.signature_help = SignatureHelpEngine.from_header_index(None)
+        self.tree_entries = []
+
+    def _ensure_header_index(self) -> HeaderIndex:
+        if not self.header_index_loaded:
+            self.header_index = self._load_header_index()
+            self.header_index_loaded = True
+            self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
+        return self.header_index
+
+    def _ensure_project_index(self) -> ProjectIndex | None:
+        if not self.project_index_loaded:
+            self.project_index = self._load_project_index()
+            self.project_index_loaded = True
+        return self.project_index
+
+    def _ensure_project_files(self) -> ProjectFiles | None:
+        if not self.project_files_loaded:
+            self.project_files = self._load_project_files()
+            self.project_files_loaded = True
+        return self.project_files
+
     def _reload_file_context(self) -> None:
         self.project_root = self._find_project_root()
         self.recent_store_path = self._default_recent_store_path()
-        self.header_index = self._load_header_index()
-        self.project_index = self._load_project_index()
-        self.project_files = self._load_project_files()
-        self.signature_help = SignatureHelpEngine.from_header_index(self.header_index)
+        self._invalidate_file_context_indexes()
+        if self.tree_visible:
+            self.project_files = self._ensure_project_files()
+            self._refresh_tree_entries()
         self._refresh_diagnostics()
 
     def _refresh_diagnostics(self) -> None:
@@ -646,7 +678,7 @@ class EditorApp:
         self.status = "Diagnostics: " + " | ".join(self.list_lines[:3])
 
     def _show_project_tree(self) -> None:
-        self.project_files = self._load_project_files()
+        self.project_files = self._ensure_project_files()
         self.tree_visible = True
         self.tree_focused = True
         self.tree_cursor = 0
@@ -703,7 +735,7 @@ class EditorApp:
         self._open_file(target)
         if self.path == target:
             self.tree_focused = False
-            self.project_files = self._load_project_files()
+            self.project_files = self._ensure_project_files()
             self._refresh_tree_entries(entry.relative_path)
             self.status = f"Opened {entry.relative_path} | Ctrl-W tree"
         elif before != self.path:
@@ -721,7 +753,7 @@ class EditorApp:
         self.status = "Project tree closed"
 
     def _command_open(self, query: str) -> None:
-        self.project_files = self._load_project_files()
+        self.project_files = self._ensure_project_files()
         if not self.project_files:
             self.status = "No project root"
             return
@@ -922,10 +954,14 @@ class EditorApp:
 
     def _jump_to_definition(self) -> bool:
         word = self._current_word()
-        if not word or self.project_index is None:
+        if not word:
             self.status = "No symbol under cursor"
             return False
-        symbol = self.project_index.find_definition(word)
+        project_index = self._ensure_project_index()
+        if project_index is None:
+            self.status = "No project root"
+            return False
+        symbol = project_index.find_definition(word)
         if symbol is None:
             self.status = f"Definition not found: {word}"
             return False
@@ -1009,13 +1045,15 @@ class EditorApp:
 
     def _open_completions(self, show_status: bool = True) -> None:
         prefix = self.buffer.current_prefix()
+        header_index = self._ensure_header_index()
+        project_index = self._ensure_project_index()
         self.completions = self.completion.suggest(
             prefix,
             self.buffer.lines,
             self.buffer.cursor_row,
             self.buffer.cursor_col,
-            header_index=self.header_index,
-            project_index=self.project_index,
+            header_index=header_index,
+            project_index=project_index,
         )
         self.completion_index = 0
         if not self.completions and show_status:

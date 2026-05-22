@@ -26,6 +26,11 @@ Version 0.4.4 builds release runtimes on Ubuntu 22.04 and rejects bundled
 binaries that require GLIBC symbols newer than 2.35, improving compatibility
 with Ubuntu 22.04 hosts.
 .PP
+Version 0.4.5 defers local header, project symbol, and project file tree scans
+until completion, definition jump, tree, or fuzzy-open commands need them. This
+makes opening a file in a large project faster while keeping project features
+available on demand.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
