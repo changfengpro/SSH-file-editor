@@ -22,6 +22,10 @@ Version 0.4.3 publishes amd64 and arm64 Debian packages with a private Python
 runtime inside each package, so installing the downloaded .deb does not require
 apt to fetch Python or other runtime dependencies.
 .PP
+Version 0.4.4 builds release runtimes on Ubuntu 22.04 and rejects bundled
+binaries that require GLIBC symbols newer than 2.35, improving compatibility
+with Ubuntu 22.04 hosts.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching

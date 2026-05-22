@@ -15,6 +15,7 @@ from pathlib import Path
 
 PACKAGE = "sfe"
 DEFAULT_ARCH = "amd64"
+MAX_GLIBC_SYMBOL = "2.35"
 SUPPORTED_ARCHITECTURES = ("amd64", "arm64")
 PYTHON_RUNTIME_TARGET = "./usr/lib/sfe/python"
 CORE_SYSTEM_LIB_PREFIXES = (
@@ -130,6 +131,51 @@ def _ldd_dependencies(path):
     if result.returncode != 0:
         return []
     return _parse_ldd_paths(result.stdout)
+
+
+def _version_tuple(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def _glibc_versions_from_objdump(output):
+    versions = set()
+    for line in output.splitlines():
+        marker = "GLIBC_"
+        if marker not in line:
+            continue
+        for part in line.replace("(", " ").replace(")", " ").split():
+            if part.startswith(marker):
+                versions.add(part[len(marker) :])
+    return versions
+
+
+def _glibc_versions_for_binary(path):
+    result = subprocess.run(["objdump", "-T", str(path)], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return set()
+    return _glibc_versions_from_objdump(result.stdout)
+
+
+def check_runtime_glibc_compatibility(runtime_root, max_glibc=MAX_GLIBC_SYMBOL):
+    runtime_root = Path(runtime_root)
+    max_version = _version_tuple(max_glibc)
+    violations = []
+
+    for path in sorted(runtime_root.rglob("*")):
+        if not path.is_file() or not (os.access(path, os.X_OK) or ".so" in path.name):
+            continue
+        too_new = [
+            version
+            for version in _glibc_versions_for_binary(path)
+            if _version_tuple(version) > max_version
+        ]
+        if too_new:
+            rel = path.relative_to(runtime_root).as_posix()
+            violations.append(f"{rel}: {', '.join(sorted(too_new, key=_version_tuple))}")
+
+    if violations:
+        details = "\n".join(f"  {item}" for item in violations)
+        raise RuntimeError(f"bundled runtime requires glibc newer than {max_glibc}:\n{details}")
 
 
 def _copy_native_dependencies(runtime_root):
@@ -302,9 +348,23 @@ def main():
         default=DEFAULT_ARCH,
         help="Debian architecture to write into the package metadata and file name.",
     )
+    parser.add_argument(
+        "--check-glibc",
+        action="store_true",
+        help="Check the bundled Python runtime for glibc symbol compatibility after building.",
+    )
+    parser.add_argument(
+        "--max-glibc",
+        default=MAX_GLIBC_SYMBOL,
+        help="Maximum allowed GLIBC symbol version when --check-glibc is used.",
+    )
     args = parser.parse_args()
 
-    print(build_package(args.root, python_runtime=args.python_runtime, architecture=args.architecture))
+    deb_path = build_package(args.root, python_runtime=args.python_runtime, architecture=args.architecture)
+    if args.check_glibc:
+        runtime_root = args.python_runtime or Path(args.root) / "build" / "deb" / "python-runtime"
+        check_runtime_glibc_compatibility(runtime_root, args.max_glibc)
+    print(deb_path)
 
 
 if __name__ == "__main__":

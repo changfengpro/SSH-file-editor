@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.build_deb import build_package
+from scripts.build_deb import _glibc_versions_from_objdump, _version_tuple, build_package
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,13 +166,37 @@ class PackagingTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
         self.assertIn("arch: amd64", workflow)
-        self.assertIn("runner: ubuntu-latest", workflow)
+        self.assertIn("runner: ubuntu-22.04", workflow)
         self.assertIn("arch: arm64", workflow)
-        self.assertIn("runner: ubuntu-24.04-arm", workflow)
+        self.assertIn("runner: ubuntu-22.04-arm", workflow)
         self.assertIn("--architecture \"${{ matrix.arch }}\"", workflow)
         self.assertIn("sfe_${{ steps.version.outputs.version }}_amd64.deb", workflow)
         self.assertIn("sfe_${{ steps.version.outputs.version }}_arm64.deb", workflow)
         self.assertIn("sfe_latest_arm64.deb", workflow)
+
+    def test_release_workflow_checks_glibc_compatibility(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("--max-glibc 2.35", workflow)
+        self.assertIn("Check runtime glibc compatibility", workflow)
+
+    def test_build_script_can_check_runtime_glibc_version(self):
+        build_script = (ROOT / "scripts" / "build_deb.py").read_text(encoding="utf-8")
+
+        self.assertIn("MAX_GLIBC_SYMBOL", build_script)
+        self.assertIn("check_runtime_glibc_compatibility", build_script)
+        self.assertIn("--max-glibc", build_script)
+
+    def test_glibc_symbol_parser_detects_versions_newer_than_ubuntu_2204(self):
+        versions = _glibc_versions_from_objdump(
+            """
+            0000000000000000      DF *UND*  0000000000000000 (GLIBC_2.34) memcpy
+            0000000000000000      DF *UND*  0000000000000000 (GLIBC_2.38) __isoc23_strtol
+            """
+        )
+        too_new = [version for version in versions if _version_tuple(version) > _version_tuple("2.35")]
+
+        self.assertEqual(too_new, ["2.38"])
 
 
 if __name__ == "__main__":

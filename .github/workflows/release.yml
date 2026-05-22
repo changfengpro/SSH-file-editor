@@ -17,9 +17,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -56,10 +56,10 @@ jobs:
         if: steps.existing.outputs.exists == 'false'
         run: python3 -m py_compile sfe.py sfe_core.py scripts/build_deb.py
 
-      - name: Build package
+      - name: Check runtime glibc compatibility and build package
         if: steps.existing.outputs.exists == 'false'
         run: |
-          python3 scripts/build_deb.py --root . --architecture "${{ matrix.arch }}"
+          python3 scripts/build_deb.py --root . --architecture "${{ matrix.arch }}" --check-glibc --max-glibc 2.35
           cp "dist/sfe_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "dist/sfe_latest_${{ matrix.arch }}.deb"
           sha256sum "dist/sfe_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "dist/sfe_latest_${{ matrix.arch }}.deb"
 
@@ -122,9 +122,11 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
+          - Fix the bundled Python runtime requiring GLIBC_2.38 on Ubuntu 22.04 hosts.
           - Bundle a private Python runtime inside the Debian package.
           - Remove apt dependency metadata so local package installation does not download dependencies.
           - Publish both amd64 and arm64 Debian packages.
+          - Build runtime packages on Ubuntu 22.04 and reject GLIBC symbols newer than 2.35.
           - Install upgrades with dpkg instead of apt dependency resolution.
           - Keep sfe_latest_all.deb as a compatibility alias for older upgrade scripts.
 
