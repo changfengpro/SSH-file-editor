@@ -34,6 +34,11 @@ def build_test_package(tmp_path, architecture="amd64"):
 
 
 def read_deb_member(path, archive_name, member_name):
+    with open_deb_tar(path, archive_name) as tar:
+        return tar.extractfile(member_name).read()
+
+
+def open_deb_tar(path, archive_name):
     data = Path(path).read_bytes()
     if not data.startswith(b"!<arch>\n"):
         raise AssertionError("not a Debian ar archive")
@@ -49,8 +54,7 @@ def read_deb_member(path, archive_name, member_name):
         pos += size + (size % 2)
 
     archive = gzip.decompress(members[archive_name])
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-        return tar.extractfile(member_name).read()
+    return tarfile.open(fileobj=io.BytesIO(archive), mode="r:")
 
 
 class PackagingTests(unittest.TestCase):
@@ -139,6 +143,21 @@ class PackagingTests(unittest.TestCase):
 
         self.assertTrue(sfe_pyc.startswith(importlib.util.MAGIC_NUMBER))
         self.assertTrue(core_pyc.startswith(importlib.util.MAGIC_NUMBER))
+
+    def test_built_deb_creates_pycache_directory_before_bytecode_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_test_package(tmp_path)
+            cache_tag = Path(importlib.util.cache_from_source("sfe.py")).name
+            cache_dir = "./usr/lib/sfe/__pycache__"
+            pyc_path = f"{cache_dir}/{cache_tag}"
+            with open_deb_tar(deb_path, "data.tar.gz") as tar:
+                members = tar.getmembers()
+
+        names = [member.name for member in members]
+        self.assertIn(cache_dir, names)
+        self.assertTrue(members[names.index(cache_dir)].isdir())
+        self.assertLess(names.index(cache_dir), names.index(pyc_path))
 
     def test_built_deb_contains_config_man_page_and_upgrade_script(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -310,6 +310,7 @@ def build_package(root, build_root=None, dist_dir=None, python_runtime=None, arc
             ("dir", "./usr/bin", 0o755),
             ("dir", "./usr/lib", 0o755),
             ("dir", "./usr/lib/sfe", 0o755),
+            ("dir", "./usr/lib/sfe/__pycache__", 0o755),
             ("dir", PYTHON_RUNTIME_TARGET, 0o755),
             ("dir", "./usr/share", 0o755),
             ("dir", "./usr/share/doc", 0o755),

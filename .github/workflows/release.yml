@@ -124,7 +124,7 @@ jobs:
           ## Changes
           - Make sfe --version and sfe -v return from the shell launcher without starting Python.
           - Start the editor as python -m sfe with PYTHONPATH set to the installed library directory.
-          - Ship precompiled sfe.py and sfe_core.py bytecode in the Debian package.
+          - Ship precompiled sfe.py and sfe_core.py bytecode in the Debian package with the required cache directory.
           - Add regression coverage for the version fast path and packaged bytecode.
 
           ## Verification
