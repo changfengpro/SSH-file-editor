@@ -7,6 +7,16 @@ SFE_TERMINFO="$SFE_HOME/python/share/terminfo"
 SFE_SELECTED_PYTHON="$SFE_SYSTEM_PYTHON"
 SFE_USES_BUNDLED_PYTHON=0
 
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
+    if [ -r "$SFE_HOME/VERSION" ]; then
+        SFE_VERSION=$(tr -d '\r\n' < "$SFE_HOME/VERSION")
+    else
+        SFE_VERSION=unknown
+    fi
+    printf "sfe %s\n" "$SFE_VERSION"
+    exit 0
+fi
+
 if [ "${SFE_PREFER_BUNDLED_PYTHON:-0}" = "1" ] || [ ! -x "$SFE_SYSTEM_PYTHON" ]; then
     SFE_SELECTED_PYTHON="$SFE_BUNDLED_PYTHON"
     SFE_USES_BUNDLED_PYTHON=1
@@ -28,4 +38,5 @@ if [ -d "$SFE_TERMINFO" ]; then
     fi
 fi
 
-exec "$SFE_SELECTED_PYTHON" -B -S "$SFE_HOME/sfe.py" "$@"
+export PYTHONPATH="$SFE_HOME${PYTHONPATH:+:$PYTHONPATH}"
+exec "$SFE_SELECTED_PYTHON" -B -S -m sfe "$@"

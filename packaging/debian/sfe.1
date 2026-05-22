@@ -36,6 +36,10 @@ and Python site initialization disabled for faster startup, while keeping the
 bundled Python runtime as an automatic fallback when system Python or curses is
 unavailable.
 .PP
+Version 0.4.7 handles --version and -v directly in the launcher and ships
+precompiled editor bytecode, reducing Python import and compile work before the
+editor screen opens.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching

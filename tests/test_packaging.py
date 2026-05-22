@@ -1,4 +1,5 @@
 import gzip
+import importlib.util
 import io
 import tarfile
 import tempfile
@@ -111,13 +112,33 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('[ ! -x "$SFE_SYSTEM_PYTHON" ]', launcher)
         self.assertIn('SFE_PREFER_BUNDLED_PYTHON', launcher)
         self.assertIn("TERMINFO_DIRS", launcher)
-        self.assertIn('exec "$SFE_SELECTED_PYTHON" -B -S "$SFE_HOME/sfe.py" "$@"', launcher)
+        self.assertIn('export PYTHONPATH="$SFE_HOME${PYTHONPATH:+:$PYTHONPATH}"', launcher)
+        self.assertIn('exec "$SFE_SELECTED_PYTHON" -B -S -m sfe "$@"', launcher)
 
     def test_launcher_only_adds_bundled_native_libs_for_bundled_python(self):
         launcher = (ROOT / "packaging" / "debian" / "sfe").read_text(encoding="utf-8")
 
         self.assertIn('SFE_USES_BUNDLED_PYTHON=1', launcher)
         self.assertIn('if [ "$SFE_USES_BUNDLED_PYTHON" = "1" ] && [ -d "$SFE_NATIVE_LIB" ]; then', launcher)
+
+    def test_launcher_handles_version_without_starting_python(self):
+        launcher = (ROOT / "packaging" / "debian" / "sfe").read_text(encoding="utf-8")
+
+        self.assertIn('if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then', launcher)
+        self.assertIn('printf "sfe %s\\n" "$SFE_VERSION"', launcher)
+        self.assertLess(launcher.find('if [ "${1:-}" = "--version" ]'), launcher.find('exec "$SFE_SELECTED_PYTHON"'))
+
+    def test_built_deb_contains_precompiled_editor_bytecode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_test_package(tmp_path)
+            cache_tag = Path(importlib.util.cache_from_source("sfe.py")).name
+            core_cache_tag = Path(importlib.util.cache_from_source("sfe_core.py")).name
+            sfe_pyc = read_deb_member(deb_path, "data.tar.gz", f"./usr/lib/sfe/__pycache__/{cache_tag}")
+            core_pyc = read_deb_member(deb_path, "data.tar.gz", f"./usr/lib/sfe/__pycache__/{core_cache_tag}")
+
+        self.assertTrue(sfe_pyc.startswith(importlib.util.MAGIC_NUMBER))
+        self.assertTrue(core_pyc.startswith(importlib.util.MAGIC_NUMBER))
 
     def test_built_deb_contains_config_man_page_and_upgrade_script(self):
         with tempfile.TemporaryDirectory() as tmp:

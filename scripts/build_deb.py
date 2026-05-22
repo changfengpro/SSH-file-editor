@@ -3,6 +3,8 @@ import argparse
 import gzip
 import io
 import os
+import importlib.util
+import py_compile
 import shutil
 import stat
 import subprocess
@@ -86,6 +88,14 @@ def _read_text_lf(path):
 
 def _read_gzipped_text_lf(path, mtime):
     return gzip.compress(_read_text_lf(path), mtime=mtime)
+
+
+def _precompile_source(source, cache_name, build_root):
+    build_root = Path(build_root)
+    target = build_root / cache_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    py_compile.compile(str(source), cfile=str(target), dfile=f"/usr/lib/sfe/{Path(source).name}", doraise=True)
+    return target.read_bytes()
 
 
 def _copy_tree(source, destination):
@@ -312,6 +322,22 @@ def build_package(root, build_root=None, dist_dir=None, python_runtime=None, arc
             ("file", "./usr/lib/sfe/VERSION", _read_text_lf(root / "VERSION"), 0o644),
             ("file", "./usr/lib/sfe/sfe.py", root / "sfe.py", 0o644),
             ("file", "./usr/lib/sfe/sfe_core.py", root / "sfe_core.py", 0o644),
+            (
+                "file",
+                f"./usr/lib/sfe/__pycache__/{Path(importlib.util.cache_from_source('sfe.py')).name}",
+                _precompile_source(root / "sfe.py", Path(importlib.util.cache_from_source("sfe.py")).name, build_root / "pycache"),
+                0o644,
+            ),
+            (
+                "file",
+                f"./usr/lib/sfe/__pycache__/{Path(importlib.util.cache_from_source('sfe_core.py')).name}",
+                _precompile_source(
+                    root / "sfe_core.py",
+                    Path(importlib.util.cache_from_source("sfe_core.py")).name,
+                    build_root / "pycache",
+                ),
+                0o644,
+            ),
             ("file", "./usr/share/doc/sfe/README.md", root / "README.md", 0o644),
             (
                 "file",

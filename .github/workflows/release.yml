@@ -122,10 +122,10 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Speed up installed startup by preferring /usr/bin/python3 -B -S instead of cold-starting the bundled Python runtime every time.
-          - Keep the bundled Python runtime as an automatic fallback when system Python or curses is unavailable.
-          - Only add bundled native library paths when the bundled runtime is actually selected.
-          - Add regression coverage for the launcher fast path and bundled fallback behavior.
+          - Make sfe --version and sfe -v return from the shell launcher without starting Python.
+          - Start the editor as python -m sfe with PYTHONPATH set to the installed library directory.
+          - Ship precompiled sfe.py and sfe_core.py bytecode in the Debian package.
+          - Add regression coverage for the version fast path and packaged bytecode.
 
           ## Verification
           - python3 -m unittest discover -s tests
