@@ -2,9 +2,8 @@ Package: sfe
 Version: @VERSION@
 Section: editors
 Priority: optional
-Architecture: all
+Architecture: @ARCHITECTURE@
 Maintainer: changfengpro <2728019272@qq.com>
-Depends: python3, python3:any
 Homepage: https://github.com/changfengpro/SSH-file-editor
 Description: SSH-friendly terminal C code editor
  sfe is a lightweight terminal editor for SSH sessions.

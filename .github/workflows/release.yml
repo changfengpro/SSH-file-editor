@@ -12,8 +12,15 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,9 +59,61 @@ jobs:
       - name: Build package
         if: steps.existing.outputs.exists == 'false'
         run: |
-          python3 scripts/build_deb.py --root .
-          cp "dist/sfe_${{ steps.version.outputs.version }}_all.deb" dist/sfe_latest_all.deb
-          sha256sum "dist/sfe_${{ steps.version.outputs.version }}_all.deb" dist/sfe_latest_all.deb
+          python3 scripts/build_deb.py --root . --architecture "${{ matrix.arch }}"
+          cp "dist/sfe_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "dist/sfe_latest_${{ matrix.arch }}.deb"
+          sha256sum "dist/sfe_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "dist/sfe_latest_${{ matrix.arch }}.deb"
+
+      - name: Upload package artifact
+        if: steps.existing.outputs.exists == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfe-${{ matrix.arch }}
+          path: |
+            dist/sfe_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb
+            dist/sfe_latest_${{ matrix.arch }}.deb
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag
+        run: git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Check existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download package artifacts
+        if: steps.existing.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Add compatibility latest alias
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          cp "dist/sfe_latest_amd64.deb" dist/sfe_latest_all.deb
+          sha256sum dist/*.deb
 
       - name: Create release
         if: steps.existing.outputs.exists == 'false'
@@ -63,17 +122,21 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Add a toggleable left project tree pane.
-          - Keep the tree collapsed by default and let Enter expand/collapse directories.
-          - Open selected files in the editor pane and switch focus with Ctrl-W.
-          - Update README and man page for the new tree workflow.
+          - Bundle a private Python runtime inside the Debian package.
+          - Remove apt dependency metadata so local package installation does not download dependencies.
+          - Publish both amd64 and arm64 Debian packages.
+          - Install upgrades with dpkg instead of apt dependency resolution.
+          - Keep sfe_latest_all.deb as a compatibility alias for older upgrade scripts.
 
           ## Verification
           - python3 -m unittest discover -s tests
           - python3 -m py_compile sfe.py sfe_core.py scripts/build_deb.py
           EOF
           gh release create "${{ steps.version.outputs.tag }}" \
-            "dist/sfe_${{ steps.version.outputs.version }}_all.deb" \
+            "dist/sfe_${{ steps.version.outputs.version }}_amd64.deb" \
+            "dist/sfe_${{ steps.version.outputs.version }}_arm64.deb" \
+            "dist/sfe_latest_amd64.deb" \
+            "dist/sfe_latest_arm64.deb" \
             "dist/sfe_latest_all.deb" \
             --title "${{ steps.version.outputs.tag }}" \
             --notes-file release-notes.md

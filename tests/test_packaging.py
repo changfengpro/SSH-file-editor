@@ -11,6 +11,27 @@ from scripts.build_deb import build_package
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def make_fake_python_runtime(tmp_path):
+    runtime = tmp_path / "python-runtime"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "lib" / "python3.10").mkdir(parents=True)
+    (runtime / "share" / "terminfo" / "x").mkdir(parents=True)
+    (runtime / "bin" / "python3").write_bytes(b"#!/bin/sh\n")
+    (runtime / "lib" / "python3.10" / "os.py").write_bytes(b"# fake stdlib\n")
+    (runtime / "share" / "terminfo" / "x" / "xterm-256color").write_bytes(b"fake terminfo\n")
+    return runtime
+
+
+def build_test_package(tmp_path, architecture="amd64"):
+    return build_package(
+        ROOT,
+        build_root=tmp_path / "build",
+        dist_dir=tmp_path / "dist",
+        python_runtime=make_fake_python_runtime(tmp_path),
+        architecture=architecture,
+    )
+
+
 def read_deb_member(path, archive_name, member_name):
     data = Path(path).read_bytes()
     if not data.startswith(b"!<arch>\n"):
@@ -41,24 +62,59 @@ class PackagingTests(unittest.TestCase):
     def test_built_deb_launcher_uses_unix_line_endings(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            deb_path = build_package(
-                ROOT,
-                build_root=tmp_path / "build",
-                dist_dir=tmp_path / "dist",
-            )
+            deb_path = build_test_package(tmp_path)
             launcher = read_deb_member(deb_path, "data.tar.gz", "./usr/bin/sfe")
 
         self.assertTrue(launcher.startswith(b"#!/bin/sh\n"))
         self.assertNotIn(b"\r\n", launcher)
 
+    def test_built_deb_declares_no_apt_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_test_package(tmp_path)
+            control = read_deb_member(deb_path, "control.tar.gz", "./control").decode("utf-8")
+
+        self.assertNotRegex(control, r"(?m)^Depends:")
+        self.assertNotIn("python3", control)
+        self.assertIn("Architecture: amd64", control)
+
+    def test_built_deb_name_uses_requested_architecture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_test_package(tmp_path, architecture="arm64")
+            control = read_deb_member(deb_path, "control.tar.gz", "./control").decode("utf-8")
+
+        self.assertEqual(deb_path.name, f"sfe_{(ROOT / 'VERSION').read_text(encoding='utf-8').strip()}_arm64.deb")
+        self.assertIn("Architecture: arm64", control)
+
+    def test_built_deb_contains_bundled_python_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_path = build_test_package(tmp_path)
+            python = read_deb_member(deb_path, "data.tar.gz", "./usr/lib/sfe/python/bin/python3")
+            stdlib = read_deb_member(deb_path, "data.tar.gz", "./usr/lib/sfe/python/lib/python3.10/os.py")
+            terminfo = read_deb_member(
+                deb_path,
+                "data.tar.gz",
+                "./usr/lib/sfe/python/share/terminfo/x/xterm-256color",
+            )
+
+        self.assertTrue(python.startswith(b"#!/bin/sh\n"))
+        self.assertEqual(stdlib, b"# fake stdlib\n")
+        self.assertEqual(terminfo, b"fake terminfo\n")
+
+    def test_launcher_uses_bundled_python_runtime(self):
+        launcher = (ROOT / "packaging" / "debian" / "sfe").read_text(encoding="utf-8")
+
+        self.assertIn("/usr/lib/sfe/python/bin/python3", launcher)
+        self.assertNotIn("command -v python3", launcher)
+        self.assertIn("TERMINFO_DIRS", launcher)
+        self.assertIn('exec "$SFE_PYTHON"', launcher)
+
     def test_built_deb_contains_config_man_page_and_upgrade_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            deb_path = build_package(
-                ROOT,
-                build_root=tmp_path / "build",
-                dist_dir=tmp_path / "dist",
-            )
+            deb_path = build_test_package(tmp_path)
             config = read_deb_member(deb_path, "data.tar.gz", "./etc/sfe/config.json")
             man_page = read_deb_member(deb_path, "data.tar.gz", "./usr/share/man/man1/sfe.1.gz")
             upgrade = read_deb_member(deb_path, "data.tar.gz", "./usr/bin/sfe-upgrade")
@@ -79,10 +135,44 @@ class PackagingTests(unittest.TestCase):
 
         self.assertIn("SFE_CURL_USER_AGENT", upgrade)
         self.assertIn("SFE_LATEST_DEB_URL", upgrade)
-        self.assertIn("releases/latest/download/sfe_latest_all.deb", upgrade)
+        self.assertIn("SFE_ARCH", upgrade)
+        self.assertIn("releases/latest/download/sfe_latest_${SFE_ARCH}.deb", upgrade)
         self.assertIn("User-Agent: $SFE_CURL_USER_AGENT", upgrade)
         self.assertIn("Accept: application/vnd.github+json", upgrade)
         self.assertIn("X-GitHub-Api-Version: 2022-11-28", upgrade)
+
+    def test_upgrade_script_installs_downloaded_package_without_apt_dependency_resolution(self):
+        upgrade = (ROOT / "packaging" / "debian" / "sfe-upgrade").read_text(encoding="utf-8")
+
+        self.assertIn("command -v dpkg", upgrade)
+        self.assertIn("sudo dpkg -i", upgrade)
+        self.assertNotIn("apt install", upgrade)
+
+    def test_upgrade_script_uses_bundled_python_for_api_fallback(self):
+        upgrade = (ROOT / "packaging" / "debian" / "sfe-upgrade").read_text(encoding="utf-8")
+
+        self.assertIn('SFE_PYTHON="${SFE_PYTHON:-/usr/lib/sfe/python/bin/python3}"', upgrade)
+        self.assertIn('"$SFE_PYTHON" - "$release_json"', upgrade)
+
+    def test_upgrade_script_selects_supported_host_architecture(self):
+        upgrade = (ROOT / "packaging" / "debian" / "sfe-upgrade").read_text(encoding="utf-8")
+
+        self.assertIn("dpkg --print-architecture", upgrade)
+        self.assertIn("amd64|arm64", upgrade)
+        self.assertIn("sfe_latest_${SFE_ARCH}.deb", upgrade)
+        self.assertIn('name = f"sfe_latest_{arch}.deb"', upgrade)
+
+    def test_release_workflow_builds_and_publishes_amd64_and_arm64_packages(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("arch: amd64", workflow)
+        self.assertIn("runner: ubuntu-latest", workflow)
+        self.assertIn("arch: arm64", workflow)
+        self.assertIn("runner: ubuntu-24.04-arm", workflow)
+        self.assertIn("--architecture \"${{ matrix.arch }}\"", workflow)
+        self.assertIn("sfe_${{ steps.version.outputs.version }}_amd64.deb", workflow)
+        self.assertIn("sfe_${{ steps.version.outputs.version }}_arm64.deb", workflow)
+        self.assertIn("sfe_latest_arm64.deb", workflow)
 
 
 if __name__ == "__main__":

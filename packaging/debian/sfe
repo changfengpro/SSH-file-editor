@@ -1,2 +1,23 @@
 #!/bin/sh
-exec python3 /usr/lib/sfe/sfe.py "$@"
+SFE_HOME="${SFE_HOME:-/usr/lib/sfe}"
+SFE_PYTHON="${SFE_PYTHON:-/usr/lib/sfe/python/bin/python3}"
+SFE_NATIVE_LIB="$SFE_HOME/python/lib/native"
+SFE_TERMINFO="$SFE_HOME/python/share/terminfo"
+
+if [ -d "$SFE_NATIVE_LIB" ]; then
+    if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+        export LD_LIBRARY_PATH="$SFE_NATIVE_LIB:$LD_LIBRARY_PATH"
+    else
+        export LD_LIBRARY_PATH="$SFE_NATIVE_LIB"
+    fi
+fi
+
+if [ -d "$SFE_TERMINFO" ]; then
+    if [ -n "${TERMINFO_DIRS:-}" ]; then
+        export TERMINFO_DIRS="$SFE_TERMINFO:$TERMINFO_DIRS"
+    else
+        export TERMINFO_DIRS="$SFE_TERMINFO:/usr/share/terminfo:/lib/terminfo"
+    fi
+fi
+
+exec "$SFE_PYTHON" "$SFE_HOME/sfe.py" "$@"

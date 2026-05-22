@@ -2,13 +2,31 @@
 import argparse
 import gzip
 import io
+import os
 import shutil
+import stat
+import subprocess
+import sys
+import sysconfig
 import tarfile
 import time
 from pathlib import Path
 
 
 PACKAGE = "sfe"
+DEFAULT_ARCH = "amd64"
+SUPPORTED_ARCHITECTURES = ("amd64", "arm64")
+PYTHON_RUNTIME_TARGET = "./usr/lib/sfe/python"
+CORE_SYSTEM_LIB_PREFIXES = (
+    "ld-linux",
+    "libc.so",
+    "libdl.so",
+    "libm.so",
+    "libpthread.so",
+    "libresolv.so",
+    "librt.so",
+    "libutil.so",
+)
 
 
 def _tar_info(name, mode, size=0, kind="file", mtime=None):
@@ -69,24 +87,159 @@ def _read_gzipped_text_lf(path, mtime):
     return gzip.compress(_read_text_lf(path), mtime=mtime)
 
 
-def build_package(root, build_root=None, dist_dir=None):
+def _copy_tree(source, destination):
+    source = Path(source)
+    destination = Path(destination)
+    if not source.exists():
+        raise FileNotFoundError(source)
+    for path in source.rglob("*"):
+        if "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        rel = path.relative_to(source)
+        target = destination / rel
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if path.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target, follow_symlinks=True)
+
+
+def _parse_ldd_paths(output):
+    paths = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or "linux-vdso" in line or "statically linked" in line:
+            continue
+        if "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = line.split(" ", 1)[0]
+        if candidate.startswith("/") and Path(candidate).exists():
+            paths.append(Path(candidate))
+    return paths
+
+
+def _is_core_system_library(path):
+    name = path.name
+    return any(name.startswith(prefix) for prefix in CORE_SYSTEM_LIB_PREFIXES)
+
+
+def _ldd_dependencies(path):
+    result = subprocess.run(["ldd", str(path)], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return []
+    return _parse_ldd_paths(result.stdout)
+
+
+def _copy_native_dependencies(runtime_root):
+    native_dir = runtime_root / "lib" / "native"
+    seen = set()
+    pending = []
+
+    for path in runtime_root.rglob("*"):
+        if path.is_file() and (os.access(path, os.X_OK) or ".so" in path.name):
+            pending.extend(_ldd_dependencies(path))
+
+    while pending:
+        dep = pending.pop().resolve()
+        if dep in seen or _is_core_system_library(dep):
+            continue
+        seen.add(dep)
+        target = native_dir / dep.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            shutil.copy2(dep, target, follow_symlinks=True)
+        pending.extend(_ldd_dependencies(target))
+
+
+def _copy_terminfo(destination):
+    target = destination / "share" / "terminfo"
+    for source in (Path("/usr/share/terminfo"), Path("/lib/terminfo")):
+        if source.exists():
+            _copy_tree(source, target)
+            return
+
+
+def collect_python_runtime(destination):
+    if os.name != "posix":
+        raise RuntimeError("bundled Python runtime collection must run on Linux; pass --python-runtime for tests")
+
+    destination = Path(destination)
+    if destination.exists():
+        shutil.rmtree(destination)
+
+    version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    stdlib = Path(sysconfig.get_paths()["stdlib"]).resolve()
+    platstdlib = Path(sysconfig.get_paths().get("platstdlib", stdlib)).resolve()
+    python_exe = Path(sys.executable).resolve()
+
+    (destination / "bin").mkdir(parents=True)
+    (destination / "lib").mkdir(parents=True)
+    shutil.copy2(python_exe, destination / "bin" / "python3", follow_symlinks=True)
+    os.chmod(destination / "bin" / "python3", 0o755)
+    _copy_tree(stdlib, destination / "lib" / version_dir)
+    if platstdlib != stdlib and platstdlib.exists():
+        _copy_tree(platstdlib, destination / "lib" / version_dir)
+    _copy_native_dependencies(destination)
+    _copy_terminfo(destination)
+    return destination
+
+
+def _runtime_entries(runtime_root):
+    runtime_root = Path(runtime_root)
+    if not (runtime_root / "bin" / "python3").exists():
+        raise FileNotFoundError(f"missing bundled Python executable: {runtime_root / 'bin' / 'python3'}")
+
+    entries = []
+    directories = set()
+    for path in sorted(runtime_root.rglob("*")):
+        rel = path.relative_to(runtime_root).as_posix()
+        target = f"{PYTHON_RUNTIME_TARGET}/{rel}"
+        if path.is_dir():
+            directories.add(target)
+            continue
+        if path.is_file():
+            parent = Path(target).parent.as_posix()
+            while parent and parent not in (".", "/"):
+                directories.add(parent)
+                if parent == PYTHON_RUNTIME_TARGET:
+                    break
+                parent = Path(parent).parent.as_posix()
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if mode == 0:
+                mode = 0o755 if os.access(path, os.X_OK) else 0o644
+            entries.append(("file", target, path, mode))
+
+    dir_entries = [("dir", directory, 0o755) for directory in sorted(directories)]
+    return dir_entries + entries
+
+
+def build_package(root, build_root=None, dist_dir=None, python_runtime=None, architecture=DEFAULT_ARCH):
+    if architecture not in SUPPORTED_ARCHITECTURES:
+        supported = ", ".join(SUPPORTED_ARCHITECTURES)
+        raise ValueError(f"unsupported architecture: {architecture}; expected one of: {supported}")
+
     root = Path(root)
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
     build_root = Path(build_root) if build_root else root / "build" / "deb"
     dist_dir = Path(dist_dir) if dist_dir else root / "dist"
-    pkg_root = build_root / f"{PACKAGE}_{version}_all"
-    deb_path = dist_dir / f"{PACKAGE}_{version}_all.deb"
+    pkg_root = build_root / f"{PACKAGE}_{version}_{architecture}"
+    deb_path = dist_dir / f"{PACKAGE}_{version}_{architecture}.deb"
     mtime = int(time.time())
 
     if build_root.exists():
         shutil.rmtree(build_root)
     dist_dir.mkdir(parents=True, exist_ok=True)
     pkg_root.mkdir(parents=True, exist_ok=True)
+    if python_runtime is None:
+        python_runtime = collect_python_runtime(build_root / "python-runtime")
 
     control_text = (
         (root / "packaging" / "debian" / "control")
         .read_text(encoding="utf-8")
         .replace("@VERSION@", version)
+        .replace("@ARCHITECTURE@", architecture)
     )
     control_tar = _gzipped_tar(
         [("file", "./control", control_text.encode("utf-8"), 0o644)],
@@ -101,6 +254,7 @@ def build_package(root, build_root=None, dist_dir=None):
             ("dir", "./usr/bin", 0o755),
             ("dir", "./usr/lib", 0o755),
             ("dir", "./usr/lib/sfe", 0o755),
+            ("dir", PYTHON_RUNTIME_TARGET, 0o755),
             ("dir", "./usr/share", 0o755),
             ("dir", "./usr/share/doc", 0o755),
             ("dir", "./usr/share/doc/sfe", 0o755),
@@ -119,7 +273,8 @@ def build_package(root, build_root=None, dist_dir=None):
                 _read_gzipped_text_lf(root / "packaging" / "debian" / "sfe.1", mtime),
                 0o644,
             ),
-        ],
+        ]
+        + _runtime_entries(python_runtime),
         mtime,
     )
 
@@ -136,9 +291,20 @@ def build_package(root, build_root=None, dist_dir=None):
 def main():
     parser = argparse.ArgumentParser(description="Build the sfe Debian package.")
     parser.add_argument("--root", default=Path(__file__).resolve().parents[1], type=Path)
+    parser.add_argument(
+        "--python-runtime",
+        type=Path,
+        help="Use an existing bundled Python runtime directory instead of collecting one from this Linux host.",
+    )
+    parser.add_argument(
+        "--architecture",
+        choices=SUPPORTED_ARCHITECTURES,
+        default=DEFAULT_ARCH,
+        help="Debian architecture to write into the package metadata and file name.",
+    )
     args = parser.parse_args()
 
-    print(build_package(args.root))
+    print(build_package(args.root, python_runtime=args.python_runtime, architecture=args.architecture))
 
 
 if __name__ == "__main__":
