@@ -222,6 +222,13 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("sfe_${{ steps.version.outputs.version }}_arm64.deb", workflow)
         self.assertIn("sfe_latest_arm64.deb", workflow)
 
+    def test_release_workflow_is_idempotent_when_release_already_exists(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("gh release upload", workflow)
+        self.assertIn("--clobber", workflow)
+        self.assertNotIn("if: steps.existing.outputs.exists == 'false'", workflow)
+
     def test_release_workflow_checks_glibc_compatibility(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
