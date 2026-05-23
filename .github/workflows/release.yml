@@ -93,11 +93,11 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Add multi-buffer editing with :buffers, :bn, :bp, and :bd.
-          - Add project quick-open through :files and Ctrl-P.
-          - Keep project tree visible while opening files into editor buffers.
-          - Preserve per-buffer cursor, scroll, diagnostics, undo, and unsaved edits.
-          - Show buffer position in the status line as Buf current/total.
+          - Add :bind <command> for configuring shortcuts for buffers, bn, bp, bd, files, and tree.
+          - Save command shortcut mappings to ~/.config/sfe/config.json under keybindings.
+          - Show the captured shortcut name in the status line while binding.
+          - Make Ctrl-W open the project tree when it is currently closed.
+          - Document command keybindings in README, man page, and default config.
 
           ## Verification
           - python3 -m unittest discover -s tests
