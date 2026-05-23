@@ -93,10 +93,10 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Support Ctrl-Left, Ctrl-Right, Ctrl-Up, and Ctrl-Down in :bind command shortcuts.
-          - Normalize terminal-specific curses key codes such as 561 to ctrl+right.
-          - Parse xterm Ctrl-arrow escape sequences such as ESC[1;5C.
-          - Document Ctrl-arrow keybindings in README and man page.
+          - Use terminal key names to distinguish real Ctrl-arrow keys from Shift/Alt arrows.
+          - Fix Ctrl-Left on xterm-compatible terminals where curses reports 546 / kLFT5.
+          - Reject shortcuts that conflict with terminal, shell/readline, tmux/screen, Vim, or built-in SFE behavior.
+          - Support low-conflict function-key command bindings such as F3 through F9.
 
           ## Verification
           - python3 -m unittest discover -s tests

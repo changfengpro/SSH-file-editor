@@ -52,6 +52,11 @@ Version 0.5.2 allows :bind command shortcuts to use Ctrl-Left, Ctrl-Right,
 Ctrl-Up, and Ctrl-Down, including terminal-specific curses key codes such as
 561 for Ctrl-Right.
 .PP
+Version 0.5.3 uses terminal key names to distinguish real Ctrl-arrow keys,
+including 546 for Ctrl-Left on xterm-compatible terminals, and rejects
+shortcuts that conflict with terminal, shell/readline, tmux/screen, Vim, or
+built-in SFE behavior.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
