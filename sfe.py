@@ -68,6 +68,20 @@ KEYBINDABLE_COMMANDS = {
 SYSTEM_CONFIG_PATH = Path("/etc/sfe/config.json")
 DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
+CTRL_ARROW_NAMES = {"left", "right", "up", "down"}
+CTRL_ARROW_KEY_CODES = {
+    545: "ctrl+left",
+    560: "ctrl+right",
+    561: "ctrl+right",
+    525: "ctrl+down",
+    566: "ctrl+up",
+}
+CTRL_ARROW_SEQUENCE_SUFFIXES = {
+    "A": "up",
+    "B": "down",
+    "C": "right",
+    "D": "left",
+}
 
 
 def read_version() -> str:
@@ -1786,6 +1800,10 @@ def normalize_key_name(name: str) -> str:
     }
     if value in aliases:
         return aliases[value]
+    if value.startswith("control+"):
+        value = "ctrl+" + value.removeprefix("control+")
+    if value.removeprefix("ctrl+") in CTRL_ARROW_NAMES and value.startswith("ctrl+"):
+        return value
     if len(value) == 6 and value.startswith("ctrl+") and value[-1].isalpha():
         return value
     return ""
@@ -1831,6 +1849,21 @@ def key_to_names(key) -> set[str]:
         code = ord(key)
         if 1 <= code <= 26:
             return {f"ctrl+{chr(code + 96)}"}
+    if isinstance(key, str) and key.startswith("KEY_C"):
+        direction = key.removeprefix("KEY_C").lower()
+        if direction in CTRL_ARROW_NAMES:
+            return {f"ctrl+{direction}"}
+    if isinstance(key, str) and key.startswith("ctrl+"):
+        normalized = normalize_key_name(key)
+        return {normalized} if normalized else set()
+    if isinstance(key, int):
+        if key in CTRL_ARROW_KEY_CODES:
+            return {CTRL_ARROW_KEY_CODES[key]}
+        if curses is not None:
+            for direction in CTRL_ARROW_NAMES:
+                value = getattr(curses, f"KEY_C{direction.upper()}", None)
+                if value is not None and key == value:
+                    return {f"ctrl+{direction}"}
     return set()
 
 
@@ -1840,6 +1873,15 @@ def parse_key_sequence(keys) -> int | str | None:
     if keys == [ESCAPE] or keys == ["\x1b"]:
         return "\x1b"
     if len(keys) < 3 or keys[0] not in (ESCAPE, "\x1b") or keys[1] != "[":
+        return None
+    if keys[-1] in CTRL_ARROW_SEQUENCE_SUFFIXES:
+        body = "".join(str(part) for part in keys[2:-1])
+        parts = body.split(";")
+        if len(parts) >= 2 and parts[-1].isdigit():
+            modifiers = int(parts[-1])
+            ctrl_pressed = bool((modifiers - 1) & 4)
+            if ctrl_pressed:
+                return f"ctrl+{CTRL_ARROW_SEQUENCE_SUFFIXES[keys[-1]]}"
         return None
     if keys[-1] == "~":
         body = "".join(str(part) for part in keys[2:-1])
@@ -1885,6 +1927,8 @@ def could_be_csi_u_sequence(keys) -> bool:
     if len(keys) == 2:
         return True
     allowed = set("0123456789;")
+    if keys[-1] in CTRL_ARROW_SEQUENCE_SUFFIXES:
+        return True
     if keys[-1] == "~":
         return True
     return all(isinstance(part, str) and len(part) == 1 and part in allowed for part in keys[2:])

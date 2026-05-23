@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sfe import EditorApp, EditorConfig, load_config
+from sfe import EditorApp, EditorConfig, load_config, normalize_key_name
 
 
 class EditorConfigTests(unittest.TestCase):
@@ -60,6 +60,7 @@ class EditorConfigTests(unittest.TestCase):
                         "keybindings": {
                             "ctrl-b": "bn",
                             "ctrl-p": "files",
+                            "ctrl-right": "tree",
                             "ctrl-x": "not-real",
                             "bad-key": "bp",
                         }
@@ -70,7 +71,11 @@ class EditorConfigTests(unittest.TestCase):
 
             config = load_config(user_path=path, system_path=Path("missing-system-config.json"))
 
-        self.assertEqual(config.keybindings, {"ctrl+b": "bn", "ctrl+p": "files"})
+        self.assertEqual(config.keybindings, {"ctrl+b": "bn", "ctrl+p": "files", "ctrl+right": "tree"})
+
+    def test_normalize_key_name_accepts_ctrl_arrow_aliases(self):
+        self.assertEqual(normalize_key_name("ctrl-right"), "ctrl+right")
+        self.assertEqual(normalize_key_name("control+left"), "ctrl+left")
 
     def test_load_config_merges_system_then_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:

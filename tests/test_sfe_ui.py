@@ -27,6 +27,14 @@ class FakeCurses:
     KEY_DC = 330
     KEY_F0 = 264
     KEY_RESIZE = 410
+    KEY_SLEFT = 393
+    KEY_SRIGHT = 402
+    KEY_SUP = 337
+    KEY_SDOWN = 336
+    KEY_CLEFT = 545
+    KEY_CRIGHT = 560
+    KEY_CUP = 566
+    KEY_CDOWN = 525
 
 
 class FakeInputScreen:
@@ -828,6 +836,41 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(saved["keybindings"], {"ctrl+b": "bn"})
         self.assertIn("ctrl+b", app.status)
         self.assertIn(":bn", app.status)
+
+    def test_bind_command_accepts_curses_ctrl_right_integer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+            app.user_config_path = config_path
+
+            app._execute_command("bind tree")
+            app._handle_bind_key(561)
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(app.config.keybindings, {"ctrl+right": "tree"})
+        self.assertEqual(saved["keybindings"], {"ctrl+right": "tree"})
+        self.assertIn("ctrl+right", app.status)
+
+    def test_bind_command_accepts_xterm_ctrl_right_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+            app.user_config_path = config_path
+
+            app._execute_command("bind tree")
+            app._handle_key_sequence(list("\x1b[1;5C"))
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["keybindings"], {"ctrl+right": "tree"})
+
+    def test_configured_ctrl_right_keybinding_runs_command(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(keybindings={"ctrl+right": "tree"}))
+
+        app._handle_normal_key(561)
+
+        self.assertTrue(app.tree_visible)
 
     def test_bind_command_rejects_unknown_command(self):
         app = EditorApp(stdscr=None, path=None)

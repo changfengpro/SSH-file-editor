@@ -189,7 +189,7 @@ Ctrl-P              在 Normal 或 Insert 模式打开项目文件列表
 
 `:bd` 删除最后一个 clean buffer 后，会创建一个新的 `[No Name]` 空 buffer。项目树保持常驻左侧面板，选中文件按 `Enter` 会在编辑窗口打开或切换 buffer，并把焦点交回编辑窗口。
 
-`:bind` 可绑定常用工作区命令：`buffers`、`bn`、`bp`、`bd`、`files` 和 `tree`。例如输入 `:bind files` 后，底部会提示按下快捷键；按下 `Ctrl-F` 后会显示 `Bound ctrl+f to :files`，并写入 `~/.config/sfe/config.json`。终端无法识别的组合键会被拒绝，按 `Esc` 可取消录入。
+`:bind` 可绑定常用工作区命令：`buffers`、`bn`、`bp`、`bd`、`files` 和 `tree`。例如输入 `:bind files` 后，底部会提示按下快捷键；按下 `Ctrl-F` 后会显示 `Bound ctrl+f to :files`，并写入 `~/.config/sfe/config.json`。也可以绑定 `Ctrl-Left`、`Ctrl-Right`、`Ctrl-Up`、`Ctrl-Down`。终端无法识别的组合键会被拒绝，按 `Esc` 可取消录入。
 
 ## v0.4.2 项目工作流
 
@@ -400,7 +400,7 @@ EOF
 - `run_command`：`:run` 使用的运行命令，留空时尝试使用上次构建产物。
 - `project_root_markers`：用于识别项目根目录的标记文件或目录。
 - `recent_files_limit`：`:recent` 最多保留的项目文件数量。
-- `keybindings`：命令快捷键映射，key 使用 `ctrl+b`、`tab`、`enter` 等规范写法，value 支持 `buffers`、`bn`、`bp`、`bd`、`files`、`tree`。
+- `keybindings`：命令快捷键映射，key 使用 `ctrl+b`、`ctrl+right`、`tab`、`enter` 等规范写法，value 支持 `buffers`、`bn`、`bp`、`bd`、`files`、`tree`。
 
 `completion_key` 支持 `ctrl+space`、`ctrl-a` 到 `ctrl-z`、`ctrl-@`、`ctrl-_`、`tab` 和 `enter`。
 终端可能无法区分某些组合键，例如 `Ctrl-J` 通常等同于 Enter，`Ctrl-I` 通常等同于 Tab；
