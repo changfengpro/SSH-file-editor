@@ -160,6 +160,10 @@ and
 .B tree.
 The captured shortcut is shown in the status line and saved to
 .B ~/.config/sfe/config.json.
+SFE rejects shortcuts that commonly conflict with terminal, shell/readline,
+tmux/screen, Vim, or built-in SFE behavior, and shows the conflict reason in
+the status line. Prefer low-conflict shortcuts such as F3 through F9 or
+Ctrl-arrow keys.
 .TP
 .B :make
 Run the configured build command, or use make / gcc fallback.
@@ -234,11 +238,9 @@ and
 .PP
 .B keybindings
 maps shortcut names such as
-.B ctrl+b,
+.B f3,
 .B ctrl+right,
-.B tab,
-or
-.B enter
+or other accepted low-conflict shortcuts
 to commands such as
 .B bn,
 .B bp,

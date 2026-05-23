@@ -31,10 +31,23 @@ class FakeCurses:
     KEY_SRIGHT = 402
     KEY_SUP = 337
     KEY_SDOWN = 336
-    KEY_CLEFT = 545
-    KEY_CRIGHT = 560
-    KEY_CUP = 566
-    KEY_CDOWN = 525
+
+    KEY_NAMES = {
+        525: b"kDN4",
+        526: b"kDN5",
+        545: b"kLFT4",
+        546: b"kLFT5",
+        560: b"kRIT4",
+        561: b"kRIT5",
+        566: b"kUP4",
+        567: b"kUP5",
+    }
+
+    @staticmethod
+    def keyname(key):
+        if key in FakeCurses.KEY_NAMES:
+            return FakeCurses.KEY_NAMES[key]
+        raise FakeCurses.error()
 
 
 class FakeInputScreen:
@@ -821,54 +834,108 @@ class EditorNormalModeTests(unittest.TestCase):
 
         self.assertEqual(app.path, first)
 
-    def test_bind_command_prompts_for_key_and_writes_config(self):
+    def test_bind_command_prompts_for_function_key_and_writes_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             app = EditorApp(stdscr=None, path=None, config=EditorConfig())
             app.user_config_path = config_path
 
             app._execute_command("bind bn")
-            app._handle_key_sequence(["\x1b", "[", "9", "8", ";", "5", "u"])
+            app._handle_bind_key("KEY_F(3)")
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(app.config.keybindings, {"ctrl+b": "bn"})
-        self.assertEqual(saved["keybindings"], {"ctrl+b": "bn"})
-        self.assertIn("ctrl+b", app.status)
+        self.assertEqual(app.config.keybindings, {"f3": "bn"})
+        self.assertEqual(saved["keybindings"], {"f3": "bn"})
+        self.assertIn("f3", app.status)
         self.assertIn(":bn", app.status)
 
-    def test_bind_command_accepts_curses_ctrl_right_integer(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
-            app.user_config_path = config_path
+    def test_bind_command_accepts_curses_ctrl_arrow_integers(self):
+        cases = [
+            (567, "ctrl+up"),
+            (526, "ctrl+down"),
+            (546, "ctrl+left"),
+            (561, "ctrl+right"),
+        ]
+        for key_code, key_name in cases:
+            with self.subTest(key_code=key_code, key_name=key_name), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "config.json"
+                app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+                app.user_config_path = config_path
 
-            app._execute_command("bind tree")
-            app._handle_bind_key(561)
+                app._execute_command("bind tree")
+                app._handle_bind_key(key_code)
 
-            saved = json.loads(config_path.read_text(encoding="utf-8"))
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(app.config.keybindings, {"ctrl+right": "tree"})
-        self.assertEqual(saved["keybindings"], {"ctrl+right": "tree"})
-        self.assertIn("ctrl+right", app.status)
+                self.assertEqual(app.config.keybindings, {key_name: "tree"})
+                self.assertEqual(saved["keybindings"], {key_name: "tree"})
+                self.assertIn(key_name, app.status)
 
-    def test_bind_command_accepts_xterm_ctrl_right_sequence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
-            app.user_config_path = config_path
+    def test_bind_command_rejects_non_ctrl_modified_arrow_integers(self):
+        for key_code in [525, 545, 560, 566]:
+            with self.subTest(key_code=key_code), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "config.json"
+                app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+                app.user_config_path = config_path
 
-            app._execute_command("bind tree")
-            app._handle_key_sequence(list("\x1b[1;5C"))
+                app._execute_command("bind tree")
+                app._handle_bind_key(key_code)
 
-            saved = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertFalse(config_path.exists())
+                self.assertIn("Unsupported shortcut", app.status)
 
-        self.assertEqual(saved["keybindings"], {"ctrl+right": "tree"})
+    def test_bind_command_rejects_conflicting_shortcuts(self):
+        conflicting_keys = ["\x01", "\x02", "\x03", "\x06", "\x0f", "\x10", "\x11", "\x13", "\x17", "\x1a", "\t", "\r", "KEY_F(1)", "KEY_F(2)", "KEY_F(10)"]
+        for key in conflicting_keys:
+            with self.subTest(key=repr(key)), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "config.json"
+                app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+                app.user_config_path = config_path
 
-    def test_configured_ctrl_right_keybinding_runs_command(self):
-        app = EditorApp(stdscr=None, path=None, config=EditorConfig(keybindings={"ctrl+right": "tree"}))
+                app._execute_command("bind tree")
+                app._handle_bind_key(key)
 
-        app._handle_normal_key(561)
+                self.assertFalse(config_path.exists())
+                self.assertIn("Shortcut conflicts", app.status)
+
+    def test_bind_command_accepts_xterm_ctrl_arrow_sequences(self):
+        cases = [
+            ("\x1b[1;5A", "ctrl+up"),
+            ("\x1b[1;5B", "ctrl+down"),
+            ("\x1b[1;5C", "ctrl+right"),
+            ("\x1b[1;5D", "ctrl+left"),
+            ("\x1b[5A", "ctrl+up"),
+            ("\x1b[5B", "ctrl+down"),
+            ("\x1b[5C", "ctrl+right"),
+            ("\x1b[5D", "ctrl+left"),
+        ]
+        for sequence, key_name in cases:
+            with self.subTest(sequence=repr(sequence)), tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "config.json"
+                app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+                app.user_config_path = config_path
+
+                app._execute_command("bind tree")
+                app._handle_key_sequence(list(sequence))
+
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+                self.assertEqual(saved["keybindings"], {key_name: "tree"})
+
+    def test_configured_ctrl_arrow_keybindings_run_command(self):
+        for key_code, key_name in [(567, "ctrl+up"), (526, "ctrl+down"), (546, "ctrl+left"), (561, "ctrl+right")]:
+            with self.subTest(key_code=key_code, key_name=key_name):
+                app = EditorApp(stdscr=None, path=None, config=EditorConfig(keybindings={key_name: "tree"}))
+
+                app._handle_normal_key(key_code)
+
+                self.assertTrue(app.tree_visible)
+
+    def test_configured_function_keybinding_runs_command(self):
+        app = EditorApp(stdscr=None, path=None, config=EditorConfig(keybindings={"f3": "tree"}))
+
+        app._handle_normal_key("KEY_F(3)")
 
         self.assertTrue(app.tree_visible)
 

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sfe import EditorApp, EditorConfig, load_config, normalize_key_name
+from sfe import EditorApp, EditorConfig, load_config, normalize_key_name, parse_key_sequence
 
 
 class EditorConfigTests(unittest.TestCase):
@@ -58,9 +58,9 @@ class EditorConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "keybindings": {
-                            "ctrl-b": "bn",
-                            "ctrl-p": "files",
+                            "f3": "bn",
                             "ctrl-right": "tree",
+                            "ctrl-q": "tree",
                             "ctrl-x": "not-real",
                             "bad-key": "bp",
                         }
@@ -71,11 +71,38 @@ class EditorConfigTests(unittest.TestCase):
 
             config = load_config(user_path=path, system_path=Path("missing-system-config.json"))
 
-        self.assertEqual(config.keybindings, {"ctrl+b": "bn", "ctrl+p": "files", "ctrl+right": "tree"})
+        self.assertEqual(config.keybindings, {"f3": "bn", "ctrl+right": "tree"})
 
     def test_normalize_key_name_accepts_ctrl_arrow_aliases(self):
         self.assertEqual(normalize_key_name("ctrl-right"), "ctrl+right")
         self.assertEqual(normalize_key_name("control+left"), "ctrl+left")
+        self.assertEqual(normalize_key_name("ctrl-up"), "ctrl+up")
+        self.assertEqual(normalize_key_name("control-down"), "ctrl+down")
+        self.assertEqual(normalize_key_name("f3"), "f3")
+
+    def test_parse_key_sequence_accepts_ctrl_arrow_modifier_matrix(self):
+        cases = [
+            ("\x1b[1;5A", "ctrl+up"),
+            ("\x1b[1;6B", "ctrl+down"),
+            ("\x1b[1;7C", "ctrl+right"),
+            ("\x1b[1;8D", "ctrl+left"),
+            ("\x1b[5A", "ctrl+up"),
+            ("\x1b[6B", "ctrl+down"),
+            ("\x1b[7C", "ctrl+right"),
+            ("\x1b[8D", "ctrl+left"),
+            ("\x1bO5A", "ctrl+up"),
+            ("\x1bO6B", "ctrl+down"),
+            ("\x1bO7C", "ctrl+right"),
+            ("\x1bO8D", "ctrl+left"),
+        ]
+        for sequence, expected in cases:
+            with self.subTest(sequence=repr(sequence)):
+                self.assertEqual(parse_key_sequence(list(sequence)), expected)
+
+    def test_parse_key_sequence_ignores_non_ctrl_arrow_modifiers(self):
+        for sequence in ["\x1b[1;2A", "\x1b[1;3B", "\x1b[1;4C", "\x1b[2D", "\x1b[3A", "\x1b[4B"]:
+            with self.subTest(sequence=repr(sequence)):
+                self.assertIsNone(parse_key_sequence(list(sequence)))
 
     def test_load_config_merges_system_then_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:

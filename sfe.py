@@ -69,18 +69,71 @@ SYSTEM_CONFIG_PATH = Path("/etc/sfe/config.json")
 DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
 CTRL_ARROW_NAMES = {"left", "right", "up", "down"}
-CTRL_ARROW_KEY_CODES = {
-    545: "ctrl+left",
-    560: "ctrl+right",
+MODIFIED_ARROW_KEY_CODES = {
+    526: "ctrl+down",
+    546: "ctrl+left",
     561: "ctrl+right",
-    525: "ctrl+down",
-    566: "ctrl+up",
+    567: "ctrl+up",
 }
 CTRL_ARROW_SEQUENCE_SUFFIXES = {
     "A": "up",
     "B": "down",
     "C": "right",
     "D": "left",
+}
+TERMINAL_ARROW_NAMES = {
+    "UP": "up",
+    "DN": "down",
+    "DOWN": "down",
+    "LFT": "left",
+    "LEFT": "left",
+    "RIT": "right",
+    "RIGHT": "right",
+}
+KEYNAME_ARROW_ALIASES = {
+    "KEY_CUP": "ctrl+up",
+    "KEY_CDOWN": "ctrl+down",
+    "KEY_CLEFT": "ctrl+left",
+    "KEY_CRIGHT": "ctrl+right",
+}
+CONFLICTING_KEYBINDING_REASONS = {
+    "ctrl+a": "common shell/readline line-start shortcut",
+    "ctrl+b": "common shell/readline backward shortcut and tmux prefix",
+    "ctrl+c": "terminal interrupt",
+    "ctrl+d": "terminal EOF",
+    "ctrl+e": "common shell/readline line-end shortcut",
+    "ctrl+f": "SFE search shortcut and common shell/readline forward shortcut",
+    "ctrl+g": "common terminal/readline abort shortcut",
+    "ctrl+h": "terminal backspace",
+    "ctrl+i": "terminal Tab equivalent",
+    "ctrl+j": "terminal Enter equivalent",
+    "ctrl+k": "common shell/readline kill-line shortcut",
+    "ctrl+l": "common terminal clear-screen shortcut",
+    "ctrl+m": "terminal Enter equivalent",
+    "ctrl+n": "SFE next diagnostic/completion navigation shortcut",
+    "ctrl+o": "SFE save/jump-back shortcut",
+    "ctrl+p": "SFE file picker/completion navigation shortcut",
+    "ctrl+q": "SFE quit shortcut and terminal flow-control shortcut",
+    "ctrl+r": "SFE redo shortcut and common shell history-search shortcut",
+    "ctrl+s": "SFE save shortcut and terminal flow-control shortcut",
+    "ctrl+t": "common shell/readline transpose shortcut",
+    "ctrl+u": "common shell/readline kill-line shortcut",
+    "ctrl+v": "common terminal literal-next shortcut",
+    "ctrl+w": "SFE tree shortcut and common shell/readline delete-word shortcut",
+    "ctrl+x": "common shell/readline command prefix",
+    "ctrl+y": "common shell/readline yank shortcut",
+    "ctrl+z": "terminal suspend",
+    "ctrl+[": "terminal Escape equivalent",
+    "ctrl+\\": "terminal quit",
+    "ctrl+]": "SFE definition-jump shortcut",
+    "ctrl+^": "common terminal/readline shortcut",
+    "ctrl+_": "common shell/readline undo shortcut",
+    "ctrl+space": "SFE manual completion shortcut",
+    "enter": "terminal Enter",
+    "f1": "common help shortcut",
+    "f2": "SFE save shortcut",
+    "f10": "SFE quit shortcut",
+    "tab": "terminal Tab and SFE completion/indent shortcut",
 }
 
 
@@ -189,7 +242,7 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
         for raw_key, raw_command in keybindings.items():
             key_name = normalize_key_name(str(raw_key)) if isinstance(raw_key, str) else ""
             command = normalize_bind_command(raw_command) if isinstance(raw_command, str) else ""
-            if key_name and command:
+            if key_name and key_name not in CONFLICTING_KEYBINDING_REASONS and command:
                 normalized_bindings[key_name] = command
         keybindings = normalized_bindings
     else:
@@ -613,6 +666,10 @@ class EditorApp:
         key_name = first_key_name(key)
         if not key_name:
             self.status = f"Unsupported shortcut: {key!r}"
+            return False
+        conflict_reason = CONFLICTING_KEYBINDING_REASONS.get(key_name)
+        if conflict_reason:
+            self.status = f"Shortcut conflicts: {key_name} ({conflict_reason})"
             return False
         command = self.binding_command
         if not command:
@@ -1806,6 +1863,8 @@ def normalize_key_name(name: str) -> str:
         return value
     if len(value) == 6 and value.startswith("ctrl+") and value[-1].isalpha():
         return value
+    if value.startswith("f") and value[1:].isdigit() and 1 <= int(value[1:]) <= 12:
+        return value
     return ""
 
 
@@ -1853,18 +1912,71 @@ def key_to_names(key) -> set[str]:
         direction = key.removeprefix("KEY_C").lower()
         if direction in CTRL_ARROW_NAMES:
             return {f"ctrl+{direction}"}
+    if isinstance(key, str) and key in KEYNAME_ARROW_ALIASES:
+        return {KEYNAME_ARROW_ALIASES[key]}
     if isinstance(key, str) and key.startswith("ctrl+"):
         normalized = normalize_key_name(key)
         return {normalized} if normalized else set()
+    if isinstance(key, str) and key.startswith("KEY_F(") and key.endswith(")"):
+        number_text = key.removeprefix("KEY_F(").removesuffix(")")
+        if number_text.isdigit():
+            return {f"f{number_text}"}
     if isinstance(key, int):
-        if key in CTRL_ARROW_KEY_CODES:
-            return {CTRL_ARROW_KEY_CODES[key]}
+        key_name = _curses_keyname(key)
+        normalized = _normalize_modified_arrow_keyname(key_name)
+        if normalized:
+            return {normalized}
+        if key in MODIFIED_ARROW_KEY_CODES:
+            return {MODIFIED_ARROW_KEY_CODES[key]}
         if curses is not None:
             for direction in CTRL_ARROW_NAMES:
                 value = getattr(curses, f"KEY_C{direction.upper()}", None)
                 if value is not None and key == value:
                     return {f"ctrl+{direction}"}
+            key_f0 = getattr(curses, "KEY_F0", None)
+            if key_f0 is not None and key_f0 < key <= key_f0 + 12:
+                return {f"f{key - key_f0}"}
     return set()
+
+
+def _curses_keyname(key: int) -> str:
+    if curses is None:
+        return ""
+    keyname = getattr(curses, "keyname", None)
+    if not callable(keyname):
+        return ""
+    try:
+        raw = keyname(key)
+    except curses.error:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("ascii", errors="ignore")
+    return str(raw)
+
+
+def _normalize_modified_arrow_keyname(name: str) -> str:
+    value = name.strip().upper()
+    if not value:
+        return ""
+    if value in KEYNAME_ARROW_ALIASES:
+        return KEYNAME_ARROW_ALIASES[value]
+    if value.startswith("KEY_"):
+        value = value.removeprefix("KEY_")
+    if value.startswith("K"):
+        value = value[1:]
+    for arrow_name, direction in TERMINAL_ARROW_NAMES.items():
+        if value.startswith(arrow_name):
+            suffix = value[len(arrow_name) :]
+            if suffix and suffix.isdigit():
+                return _modified_arrow_key_name(int(suffix), direction)
+    return ""
+
+
+def _modified_arrow_key_name(modifier: int, direction: str) -> str:
+    if direction not in CTRL_ARROW_NAMES:
+        return ""
+    ctrl_pressed = bool((modifier - 1) & 4)
+    return f"ctrl+{direction}" if ctrl_pressed else ""
 
 
 def parse_key_sequence(keys) -> int | str | None:
@@ -1872,16 +1984,22 @@ def parse_key_sequence(keys) -> int | str | None:
         return parse_key_sequence(list(keys[0]))
     if keys == [ESCAPE] or keys == ["\x1b"]:
         return "\x1b"
-    if len(keys) < 3 or keys[0] not in (ESCAPE, "\x1b") or keys[1] != "[":
+    if len(keys) < 3 or keys[0] not in (ESCAPE, "\x1b"):
+        return None
+    if keys[1] == "O":
+        if len(keys) == 4 and isinstance(keys[2], str) and keys[2].isdigit() and keys[3] in CTRL_ARROW_SEQUENCE_SUFFIXES:
+            return _modified_arrow_key_name(int(keys[2]), CTRL_ARROW_SEQUENCE_SUFFIXES[keys[3]]) or None
+        return None
+    if keys[1] != "[":
         return None
     if keys[-1] in CTRL_ARROW_SEQUENCE_SUFFIXES:
         body = "".join(str(part) for part in keys[2:-1])
         parts = body.split(";")
+        if len(parts) == 1 and parts[0].isdigit():
+            return _modified_arrow_key_name(int(parts[0]), CTRL_ARROW_SEQUENCE_SUFFIXES[keys[-1]]) or None
         if len(parts) >= 2 and parts[-1].isdigit():
             modifiers = int(parts[-1])
-            ctrl_pressed = bool((modifiers - 1) & 4)
-            if ctrl_pressed:
-                return f"ctrl+{CTRL_ARROW_SEQUENCE_SUFFIXES[keys[-1]]}"
+            return _modified_arrow_key_name(modifiers, CTRL_ARROW_SEQUENCE_SUFFIXES[keys[-1]]) or None
         return None
     if keys[-1] == "~":
         body = "".join(str(part) for part in keys[2:-1])
@@ -1922,6 +2040,12 @@ def could_be_csi_u_sequence(keys) -> bool:
         return False
     if len(keys) == 1:
         return True
+    if keys[1] == "O":
+        if len(keys) == 2:
+            return True
+        if len(keys) == 3:
+            return isinstance(keys[2], str) and keys[2].isdigit()
+        return keys[-1] in CTRL_ARROW_SEQUENCE_SUFFIXES
     if keys[1] != "[":
         return False
     if len(keys) == 2:
