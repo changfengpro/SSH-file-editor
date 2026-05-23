@@ -93,11 +93,10 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Add :bind <command> for configuring shortcuts for buffers, bn, bp, bd, files, and tree.
-          - Save command shortcut mappings to ~/.config/sfe/config.json under keybindings.
-          - Show the captured shortcut name in the status line while binding.
-          - Make Ctrl-W open the project tree when it is currently closed.
-          - Document command keybindings in README, man page, and default config.
+          - Support Ctrl-Left, Ctrl-Right, Ctrl-Up, and Ctrl-Down in :bind command shortcuts.
+          - Normalize terminal-specific curses key codes such as 561 to ctrl+right.
+          - Parse xterm Ctrl-arrow escape sequences such as ESC[1;5C.
+          - Document Ctrl-arrow keybindings in README and man page.
 
           ## Verification
           - python3 -m unittest discover -s tests
