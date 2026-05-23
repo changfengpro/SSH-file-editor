@@ -51,6 +51,27 @@ class EditorConfigTests(unittest.TestCase):
         self.assertEqual(config.project_root_markers, ("Makefile", ".git"))
         self.assertEqual(config.recent_files_limit, 12)
 
+    def test_load_config_reads_command_keybindings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "keybindings": {
+                            "ctrl-b": "bn",
+                            "ctrl-p": "files",
+                            "ctrl-x": "not-real",
+                            "bad-key": "bp",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(user_path=path, system_path=Path("missing-system-config.json"))
+
+        self.assertEqual(config.keybindings, {"ctrl+b": "bn", "ctrl+p": "files"})
+
     def test_load_config_merges_system_then_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -78,7 +99,7 @@ class EditorConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             path.write_text(
-                json.dumps({"auto_pair": "no", "completion_key": ""}),
+                json.dumps({"auto_pair": "no", "completion_key": "", "keybindings": []}),
                 encoding="utf-8",
             )
 

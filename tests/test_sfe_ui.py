@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -798,6 +799,43 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertFalse(app.buffer.dirty)
         self.assertEqual(len(app.buffers), 1)
 
+    def test_configured_keybinding_runs_buffer_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first), config=EditorConfig(keybindings={"ctrl+b": "bn"}))
+            app._execute_command(f"e {second}")
+
+            app._handle_normal_key("\x02")
+
+        self.assertEqual(app.path, first)
+
+    def test_bind_command_prompts_for_key_and_writes_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            app = EditorApp(stdscr=None, path=None, config=EditorConfig())
+            app.user_config_path = config_path
+
+            app._execute_command("bind bn")
+            app._handle_key_sequence(["\x1b", "[", "9", "8", ";", "5", "u"])
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(app.config.keybindings, {"ctrl+b": "bn"})
+        self.assertEqual(saved["keybindings"], {"ctrl+b": "bn"})
+        self.assertIn("ctrl+b", app.status)
+        self.assertIn(":bn", app.status)
+
+    def test_bind_command_rejects_unknown_command(self):
+        app = EditorApp(stdscr=None, path=None)
+
+        app._execute_command("bind no_such_command")
+
+        self.assertIn("Unknown bind command", app.status)
+
     def test_command_set_updates_config_and_writes_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -863,6 +901,20 @@ class EditorNormalModeTests(unittest.TestCase):
 
         self.assertTrue(visible_after_open)
         self.assertFalse(app.tree_visible)
+
+    def test_ctrl_w_opens_tree_when_tree_is_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._handle_normal_key("\x17")
+
+        self.assertTrue(app.tree_visible)
+        self.assertTrue(app.tree_focused)
+        self.assertEqual(app.mode, "NORMAL")
 
     def test_tree_enter_toggles_directory_and_opens_file(self):
         with tempfile.TemporaryDirectory() as tmp:

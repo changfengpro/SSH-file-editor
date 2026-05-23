@@ -53,6 +53,18 @@ TAB = 9
 ESCAPE = 27
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
 PAIR_CLOSERS = set(PAIRS.values())
+KEYBINDABLE_COMMANDS = {
+    "buffers",
+    "bn",
+    "bnext",
+    "bp",
+    "bprevious",
+    "bprev",
+    "bd",
+    "bdelete",
+    "files",
+    "tree",
+}
 SYSTEM_CONFIG_PATH = Path("/etc/sfe/config.json")
 DEFAULT_CONFIG_PATH = Path("~/.config/sfe/config.json").expanduser()
 KEY_SEQUENCE_TIMEOUT_MS = 25
@@ -81,6 +93,7 @@ class EditorConfig:
     run_command: str = ""
     project_root_markers: tuple[str, ...] = ("Makefile", ".git", "compile_commands.json")
     recent_files_limit: int = 20
+    keybindings: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,6 +145,7 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
     run_command = raw.get("run_command", base.run_command)
     project_root_markers = raw.get("project_root_markers", base.project_root_markers)
     recent_files_limit = raw.get("recent_files_limit", base.recent_files_limit)
+    keybindings = raw.get("keybindings", base.keybindings)
     if not isinstance(auto_pair, bool):
         auto_pair = base.auto_pair
     if not isinstance(completion_key, str) or not normalize_key_name(completion_key):
@@ -156,6 +170,16 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
         project_root_markers = base.project_root_markers
     if not isinstance(recent_files_limit, int) or not 1 <= recent_files_limit <= 200:
         recent_files_limit = base.recent_files_limit
+    if isinstance(keybindings, dict):
+        normalized_bindings = {}
+        for raw_key, raw_command in keybindings.items():
+            key_name = normalize_key_name(str(raw_key)) if isinstance(raw_key, str) else ""
+            command = normalize_bind_command(raw_command) if isinstance(raw_command, str) else ""
+            if key_name and command:
+                normalized_bindings[key_name] = command
+        keybindings = normalized_bindings
+    else:
+        keybindings = dict(base.keybindings)
     return EditorConfig(
         auto_pair=auto_pair,
         completion_key=completion_key,
@@ -167,6 +191,7 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
         run_command=run_command,
         project_root_markers=tuple(project_root_markers),
         recent_files_limit=recent_files_limit,
+        keybindings=dict(keybindings),
     )
 
 
@@ -216,6 +241,7 @@ class EditorApp:
         self.signature_help = SignatureHelpEngine.from_header_index(None)
         self.mode = "NORMAL"
         self.command_line = ""
+        self.binding_command: str | None = None
         self.status = "Vim mode: i insert | :w save | :q quit | :wq save quit"
         self.completions = []
         self.completion_index = 0
@@ -403,6 +429,8 @@ class EditorApp:
         self._remember_recent_file(self.path)
 
     def _handle_key(self, key) -> bool:
+        if self.mode == "BIND":
+            return self._handle_bind_key(key)
         if self.mode == "COMMAND":
             return self._handle_command_key(key)
         if self.mode == "LIST":
@@ -415,6 +443,8 @@ class EditorApp:
 
     def _handle_key_sequence(self, keys) -> bool:
         key = parse_key_sequence(keys)
+        if self.mode == "BIND":
+            return self._handle_bind_key(key if key is not None else keys[0])
         if key is not None:
             return self._handle_key(key)
         should_quit = False
@@ -445,8 +475,13 @@ class EditorApp:
 
     def _handle_normal_key(self, key) -> bool:
         self.completions = []
+        if self._run_keybinding(key):
+            return False
         if key in (CTRL_W, "\x17") and self.tree_visible:
             self._toggle_tree_focus()
+            return False
+        if key in (CTRL_W, "\x17"):
+            self._show_project_tree()
             return False
         if key in (CTRL_P, "\x10"):
             self._show_project_files()
@@ -555,6 +590,59 @@ class EditorApp:
         if callable(action):
             action()
 
+    def _handle_bind_key(self, key) -> bool:
+        if key in (ESCAPE, "\x1b"):
+            self.mode = "NORMAL"
+            self.binding_command = None
+            self.status = "Bind cancelled"
+            return False
+        key_name = first_key_name(key)
+        if not key_name:
+            self.status = f"Unsupported shortcut: {key!r}"
+            return False
+        command = self.binding_command
+        if not command:
+            self.mode = "NORMAL"
+            self.status = "No command waiting for shortcut"
+            return False
+        self._set_keybinding(key_name, command)
+        self.mode = "NORMAL"
+        self.binding_command = None
+        self.status = f"Bound {key_name} to :{command}"
+        return False
+
+    def _run_keybinding(self, key) -> bool:
+        command = self._command_for_key(key)
+        if not command:
+            return False
+        self._execute_extended_command(command)
+        return True
+
+    def _command_for_key(self, key) -> str:
+        for key_name in key_to_names(key):
+            command = self.config.keybindings.get(key_name)
+            if command:
+                return command
+        return ""
+
+    def _set_keybinding(self, key_name: str, command: str) -> None:
+        bindings = dict(self.config.keybindings)
+        bindings[key_name] = command
+        self.config = EditorConfig(
+            auto_pair=self.config.auto_pair,
+            completion_key=self.config.completion_key,
+            indent_width=self.config.indent_width,
+            show_line_numbers=self.config.show_line_numbers,
+            scan_local_headers=self.config.scan_local_headers,
+            signature_help=self.config.signature_help,
+            build_command=self.config.build_command,
+            run_command=self.config.run_command,
+            project_root_markers=self.config.project_root_markers,
+            recent_files_limit=self.config.recent_files_limit,
+            keybindings=bindings,
+        )
+        self._write_user_config()
+
     def _handle_tree_key(self, key) -> bool:
         if key in (ESCAPE, "\x1b", "q"):
             self._close_tree()
@@ -597,6 +685,8 @@ class EditorApp:
             return False
         if had_completions:
             self.completions = []
+        if self._run_keybinding(key):
+            return False
         if key in (CTRL_P, "\x10"):
             self._show_project_files()
             return False
@@ -725,6 +815,9 @@ class EditorApp:
             return True
         if name in ("bd", "bdelete"):
             self._delete_current_buffer()
+            return True
+        if name in ("bind", "map") and args:
+            self._start_bind_command(" ".join(args))
             return True
         if name == "recent":
             self._show_recent_files()
@@ -890,6 +983,15 @@ class EditorApp:
             return
         self._open_file(matches[0].path)
 
+    def _start_bind_command(self, command: str) -> None:
+        normalized = normalize_bind_command(command)
+        if not normalized:
+            self.status = f"Unknown bind command: {command}"
+            return
+        self.binding_command = normalized
+        self.mode = "BIND"
+        self.status = f"Press shortcut for :{normalized} (Esc cancel)"
+
     def _show_project_files(self) -> None:
         self.project_files = self._ensure_project_files()
         if not self.project_files:
@@ -1004,8 +1106,8 @@ class EditorApp:
             ":w save | :w file save as | :q quit | :wq save quit",
             ":e file open/switch | :open fuzzy | :files quick open | Ctrl-P files",
             ":buffers list | :bn/:bp next/previous | :bd delete clean buffer",
-            ":tree toggle | :tree open/close | :recent",
-            "Tree: j/k move | Enter open/toggle dir | Ctrl-W switch | q close",
+            ":bind bn map shortcut | :tree toggle | :tree open/close | :recent",
+            "Tree: Ctrl-W open/switch | j/k move | Enter open/toggle dir | q close",
             ":goto line | :symbols | :diag | :help",
             ":make build | :run last output | :errors | :set key value",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
@@ -1079,6 +1181,7 @@ class EditorApp:
         run_command = self.config.run_command
         project_root_markers = self.config.project_root_markers
         recent_files_limit = self.config.recent_files_limit
+        keybindings = dict(self.config.keybindings)
         if key == "auto_pair":
             auto_pair = value.lower() in ("on", "true", "1", "yes")
         elif key in ("completion_key", "complete"):
@@ -1120,6 +1223,7 @@ class EditorApp:
             run_command=run_command,
             project_root_markers=project_root_markers,
             recent_files_limit=recent_files_limit,
+            keybindings=keybindings,
         )
         self._write_user_config()
         self._reload_file_context()
@@ -1137,6 +1241,7 @@ class EditorApp:
             "run_command": self.config.run_command,
             "project_root_markers": list(self.config.project_root_markers),
             "recent_files_limit": self.config.recent_files_limit,
+            "keybindings": dict(sorted(self.config.keybindings.items())),
         }
         self.user_config_path.parent.mkdir(parents=True, exist_ok=True)
         self.user_config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1686,6 +1791,31 @@ def normalize_key_name(name: str) -> str:
     return ""
 
 
+def normalize_bind_command(command: str) -> str:
+    value = command.strip().lower()
+    if value.startswith(":"):
+        value = value[1:].strip()
+    aliases = {
+        "buffer": "buffers",
+        "ls": "buffers",
+        "next": "bn",
+        "prev": "bp",
+        "previous": "bp",
+        "delete": "bd",
+        "file": "files",
+    }
+    value = aliases.get(value, value)
+    return value if value in KEYBINDABLE_COMMANDS else ""
+
+
+def first_key_name(key) -> str:
+    names = sorted(key_to_names(key))
+    if not names:
+        return ""
+    preferred = [name for name in names if name not in {"ctrl+i", "ctrl+j", "ctrl+m", "ctrl+@"}]
+    return preferred[0] if preferred else names[0]
+
+
 def key_to_names(key) -> set[str]:
     if key in (CTRL_SPACE, "\x00"):
         return {"ctrl+space", "ctrl+@"}
@@ -1720,6 +1850,10 @@ def parse_key_sequence(keys) -> int | str | None:
             ctrl_pressed = bool((modifiers - 1) & 4)
             if ctrl_pressed and codepoint == 32:
                 return CTRL_SPACE
+            if ctrl_pressed and 65 <= codepoint <= 90:
+                return chr(codepoint - 64)
+            if ctrl_pressed and 97 <= codepoint <= 122:
+                return chr(codepoint - 96)
         return None
     if keys[-1] != "u":
         return None

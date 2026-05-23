@@ -108,7 +108,8 @@ Toggle the left project tree pane.
 Explicitly open or close the project tree pane.
 .TP
 .B Ctrl-W
-Switch focus between the project tree pane and the editor window.
+Open the project tree pane when it is closed. When the tree is already open,
+switch focus between the project tree pane and the editor window.
 .TP
 .B Enter
 In the project tree, expand or collapse the selected directory, or open the
@@ -140,6 +141,18 @@ Switch to the previous buffer, wrapping at the beginning.
 .B :bd, :bdelete
 Delete the current buffer if it has no unsaved changes. Deleting the last clean
 buffer creates a new empty [No Name] buffer.
+.TP
+.B :bind COMMAND
+Prompt for a shortcut key and bind it to COMMAND. Supported commands are
+.B buffers,
+.B bn,
+.B bp,
+.B bd,
+.B files,
+and
+.B tree.
+The captured shortcut is shown in the status line and saved to
+.B ~/.config/sfe/config.json.
 .TP
 .B :make
 Run the configured build command, or use make / gcc fallback.
@@ -208,8 +221,24 @@ Supported keys include
 .B build_command,
 .B run_command,
 .B project_root_markers,
+.B recent_files_limit,
 and
-.B recent_files_limit.
+.B keybindings.
+.PP
+.B keybindings
+maps shortcut names such as
+.B ctrl+b,
+.B tab,
+or
+.B enter
+to commands such as
+.B bn,
+.B bp,
+.B buffers,
+.B bd,
+.B files,
+or
+.B tree.
 .PP
 If
 .B build_command

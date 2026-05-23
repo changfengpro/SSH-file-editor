@@ -3,6 +3,7 @@
   "build_command": "",
   "completion_key": "ctrl+space",
   "indent_width": 4,
+  "keybindings": {},
   "project_root_markers": [
     "Makefile",
     ".git",
