@@ -114,6 +114,19 @@ class EditorInsertModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.cursor_col, 6)
         self.assertEqual(app.completions, [])
 
+    def test_insert_mode_ctrl_p_keeps_completion_navigation_when_menu_is_open(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "INSERT"
+        app.buffer.lines = ["pr"]
+        app.buffer.cursor_col = 2
+        app._open_completions()
+        app.completion_index = 0
+
+        app._handle_insert_key("\x10")
+
+        self.assertEqual(app.mode, "INSERT")
+        self.assertEqual(app.completion_index, len(app.completions) - 1)
+
     def test_insert_mode_accepts_snippet_completion_with_tab(self):
         app = EditorApp(stdscr=None, path=None)
         app.mode = "INSERT"
@@ -502,6 +515,21 @@ class EditorLayoutTests(unittest.TestCase):
         status_rows = [call[2] for call in screen.calls]
         self.assertTrue(any("sfe " in row and "Diagnostics: 2" in row for row in status_rows))
 
+    def test_status_line_includes_buffer_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one.c"
+            second = Path(tmp) / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            screen = FakeDrawScreen()
+            app = EditorApp(stdscr=screen, path=str(first))
+            app._execute_command(f"e {second}")
+
+            app._draw_status(10, 120)
+
+        status_rows = [call[2] for call in screen.calls]
+        self.assertTrue(any("Buf 2/2" in row for row in status_rows))
+
     def test_auto_pair_placeholder_draws_dimmed_closer(self):
         screen = FakeDrawScreen()
         app = EditorApp(stdscr=screen, path=None)
@@ -654,6 +682,122 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(app.path, target)
             self.assertEqual(app.buffer.lines, ["int next;", ""])
 
+    def test_command_edit_opens_second_buffer_without_discarding_dirty_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app.mode = "INSERT"
+            app._handle_insert_key("x")
+            app.mode = "NORMAL"
+
+            app._execute_command(f"e {second}")
+            app._execute_command("bp")
+
+        self.assertEqual(app.path, first)
+        self.assertEqual(app.buffer.lines[0], "xint one;")
+        self.assertTrue(app.buffer.dirty)
+        self.assertEqual(len(app.buffers), 2)
+
+    def test_command_edit_reuses_existing_buffer_for_same_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+
+            app._execute_command(f"e {second}")
+            app.buffer.cursor_row = 0
+            app.buffer.cursor_col = 3
+            app._execute_command(f"e {first}")
+            app._execute_command(f"e {second}")
+
+        self.assertEqual(app.path, second)
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 3))
+        self.assertEqual(len(app.buffers), 2)
+
+    def test_command_buffers_lists_current_and_dirty_buffers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app.mode = "INSERT"
+            app._handle_insert_key("x")
+            app.mode = "NORMAL"
+            app._execute_command(f"e {second}")
+
+            app._execute_command("buffers")
+
+        self.assertEqual(app.mode, "LIST")
+        joined = "\n".join(app.list_lines)
+        self.assertIn("+", joined)
+        self.assertIn("%", joined)
+        self.assertIn("one.c", joined)
+        self.assertIn("two.c", joined)
+
+    def test_buffer_next_previous_wrap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app._execute_command(f"e {second}")
+
+            app._execute_command("bn")
+            path_after_next = app.path
+            app._execute_command("bp")
+            path_after_previous = app.path
+
+        self.assertEqual(path_after_next, first)
+        self.assertEqual(path_after_previous, second)
+
+    def test_buffer_delete_refuses_dirty_and_deletes_clean_buffers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app.mode = "INSERT"
+            app._handle_insert_key("x")
+            app.mode = "NORMAL"
+
+            app._execute_command("bd")
+            dirty_status = app.status
+            dirty_count = len(app.buffers)
+            app._execute_command(f"e {second}")
+            app._execute_command("bd")
+            clean_count = len(app.buffers)
+
+        self.assertIn("E37", dirty_status)
+        self.assertEqual(dirty_count, 1)
+        self.assertEqual(clean_count, 1)
+        self.assertEqual(app.path, first)
+
+    def test_buffer_delete_last_clean_buffer_creates_no_name_buffer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "one.c"
+            target.write_text("int one;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(target))
+
+            app._execute_command("bd")
+
+        self.assertIsNone(app.path)
+        self.assertEqual(app.buffer.lines, [""])
+        self.assertFalse(app.buffer.dirty)
+        self.assertEqual(len(app.buffers), 1)
+
     def test_command_set_updates_config_and_writes_user_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -740,6 +884,27 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertTrue(app.tree_visible)
         self.assertFalse(app.tree_focused)
 
+    def test_tree_enter_opens_file_in_new_buffer_and_keeps_tree_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc src/main.c\n", encoding="utf-8")
+            (root / "src").mkdir()
+            current = root / "current.c"
+            target = root / "src" / "main.c"
+            current.write_text("int current;\n", encoding="utf-8")
+            target.write_text("int target;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(current))
+            app._execute_command("tree")
+            app._handle_key("\n")
+            paths = [entry.relative_path for entry in app.tree_entries]
+            app.tree_cursor = paths.index("src/main.c")
+            app._handle_key("\n")
+
+        self.assertEqual(app.path, target)
+        self.assertEqual(len(app.buffers), 2)
+        self.assertTrue(app.tree_visible)
+        self.assertFalse(app.tree_focused)
+
     def test_tree_ctrl_w_toggles_focus_and_q_closes_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -792,6 +957,50 @@ class EditorNormalModeTests(unittest.TestCase):
 
             self.assertEqual(app.path, target)
             self.assertEqual(app.buffer.lines[0], "int target;")
+
+    def test_files_command_lists_project_files_and_enter_opens_selected_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            current = root / "main.c"
+            target = root / "src.c"
+            current.write_text("int main;\n", encoding="utf-8")
+            target.write_text("int src;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(current))
+
+            app._execute_command("files")
+            app.list_cursor = app.list_lines.index("src.c")
+            app._handle_list_key("\n")
+
+        self.assertEqual(app.path, target)
+        self.assertEqual(app.buffer.lines[0], "int src;")
+        self.assertEqual(app.mode, "NORMAL")
+
+    def test_ctrl_p_opens_project_files_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._handle_normal_key("\x10")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Files")
+        self.assertIn("main.c", app.list_lines)
+
+    def test_list_cursor_moves_with_j_and_k(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.mode = "LIST"
+        app.list_lines = ["one.c", "two.c", "three.c"]
+        app.list_actions = [lambda: None, lambda: None, lambda: None]
+
+        app._handle_list_key("j")
+        app._handle_list_key("j")
+        app._handle_list_key("k")
+
+        self.assertEqual(app.list_cursor, 1)
 
     def test_command_recent_lists_recent_files(self):
         with tempfile.TemporaryDirectory() as tmp:

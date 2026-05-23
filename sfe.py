@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -81,6 +81,17 @@ class EditorConfig:
     run_command: str = ""
     project_root_markers: tuple[str, ...] = ("Makefile", ".git", "compile_commands.json")
     recent_files_limit: int = 20
+
+
+@dataclass
+class EditorBuffer:
+    path: Path | None
+    buffer: TextBuffer
+    row_offset: int = 0
+    col_offset: int = 0
+    diagnostics: list[object] = field(default_factory=list)
+    undo: UndoManager = field(default_factory=UndoManager)
+    auto_pair_placeholders: list[tuple[int, int, str]] = field(default_factory=list)
 
 
 def load_config(
@@ -162,14 +173,31 @@ def _merge_config(base: EditorConfig, raw: dict) -> EditorConfig:
 class EditorApp:
     def __init__(self, stdscr, path: str | None, config: EditorConfig | None = None):
         self.stdscr = stdscr
-        self.path = Path(path) if path else None
+        initial_path = Path(path) if path else None
         self.user_config_path = DEFAULT_CONFIG_PATH
         self.config = config if config is not None else EditorConfig()
-        self.buffer = self._load_buffer(self.path)
         self.completion = CompletionEngine()
         self.commands = VimCommandProcessor()
         self.highlighter = SyntaxHighlighter()
         self.syntax_attrs = {"plain": 0}
+        self.path: Path | None = initial_path
+        self.buffer = self._load_buffer(initial_path)
+        self.row_offset = 0
+        self.col_offset = 0
+        self.diagnostic_engine = CDiagnosticEngine()
+        self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
+        self.undo = UndoManager()
+        self.auto_pair_placeholders: list[tuple[int, int, str]] = []
+        self.buffers = [
+            EditorBuffer(
+                path=initial_path,
+                buffer=self.buffer,
+                diagnostics=list(self.diagnostics),
+                undo=self.undo,
+                auto_pair_placeholders=self.auto_pair_placeholders,
+            )
+        ]
+        self.current_buffer_index = 0
         self.project_root = self._find_project_root()
         self.header_index = HeaderIndex(set(), [])
         self.project_index: ProjectIndex | None = None
@@ -177,8 +205,6 @@ class EditorApp:
         self.header_index_loaded = False
         self.project_index_loaded = False
         self.project_files_loaded = False
-        self.diagnostic_engine = CDiagnosticEngine()
-        self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
         self.build_diagnostics: list[BuildDiagnostic] = []
         self.build_output = ""
         self.last_build_command = ""
@@ -188,19 +214,18 @@ class EditorApp:
         if self.path is not None and self.stdscr is not None:
             self._remember_recent_file(self.path)
         self.signature_help = SignatureHelpEngine.from_header_index(None)
-        self.row_offset = 0
-        self.col_offset = 0
         self.mode = "NORMAL"
         self.command_line = ""
         self.status = "Vim mode: i insert | :w save | :q quit | :wq save quit"
         self.completions = []
         self.completion_index = 0
         self.quit_warning = False
-        self.undo = UndoManager()
-        self.auto_pair_placeholders: list[tuple[int, int, str]] = []
         self.last_search_query = ""
         self.list_title = ""
         self.list_lines: list[str] = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
+        self.list_actions: list[object] = []
         self.jump_stack: list[tuple[Path | None, int, int]] = []
         self.tree_visible = False
         self.tree_focused = False
@@ -247,6 +272,58 @@ class EditorApp:
             return TextBuffer()
         text = path.read_text(encoding="utf-8", errors="replace")
         return TextBuffer.from_text(text)
+
+    def _current_editor_buffer(self) -> EditorBuffer:
+        return self.buffers[self.current_buffer_index]
+
+    def _sync_current_buffer_state(self) -> None:
+        if not self.buffers:
+            return
+        current = self._current_editor_buffer()
+        current.path = self.path
+        current.buffer = self.buffer
+        current.row_offset = self.row_offset
+        current.col_offset = self.col_offset
+        current.diagnostics = list(self.diagnostics)
+        current.undo = self.undo
+        current.auto_pair_placeholders = list(self.auto_pair_placeholders)
+
+    def _activate_buffer(self, index: int) -> None:
+        if not self.buffers:
+            self.buffers = [EditorBuffer(None, TextBuffer())]
+            self.current_buffer_index = 0
+        index = max(0, min(index, len(self.buffers) - 1))
+        current = self.buffers[index]
+        self.current_buffer_index = index
+        self.path = current.path
+        self.buffer = current.buffer
+        self.row_offset = current.row_offset
+        self.col_offset = current.col_offset
+        self.diagnostics = list(current.diagnostics)
+        self.undo = current.undo
+        self.auto_pair_placeholders = list(current.auto_pair_placeholders)
+        self.completions = []
+        self.completion_index = 0
+        self._reload_file_context()
+
+    def _normalized_path(self, path: Path | None) -> Path | None:
+        if path is None:
+            return None
+        try:
+            return path.expanduser().resolve()
+        except OSError:
+            return path.expanduser().absolute()
+
+    def _find_buffer_index(self, path: Path) -> int | None:
+        normalized = self._normalized_path(path)
+        for index, item in enumerate(self.buffers):
+            if item.path is not None and self._normalized_path(item.path) == normalized:
+                return index
+        return None
+
+    def _current_buffer_label(self, item: EditorBuffer | None = None) -> str:
+        item = self._current_editor_buffer() if item is None else item
+        return str(item.path) if item.path else "[No Name]"
 
     def _load_header_index(self) -> HeaderIndex:
         if not self.config.scan_local_headers or self.path is None:
@@ -309,6 +386,7 @@ class EditorApp:
 
     def _refresh_diagnostics(self) -> None:
         self.diagnostics = self.diagnostic_engine.analyze(self.buffer.lines)
+        self._sync_current_buffer_state()
 
     def _save(self, path: Path | None = None) -> None:
         if path is not None:
@@ -320,6 +398,7 @@ class EditorApp:
         self.path.write_text(self.buffer.to_text(), encoding="utf-8")
         self.buffer.dirty = False
         self.status = f"Saved {self.path}"
+        self._sync_current_buffer_state()
         self._reload_file_context()
         self._remember_recent_file(self.path)
 
@@ -368,6 +447,9 @@ class EditorApp:
         self.completions = []
         if key in (CTRL_W, "\x17") and self.tree_visible:
             self._toggle_tree_focus()
+            return False
+        if key in (CTRL_P, "\x10"):
+            self._show_project_files()
             return False
         if key == ":":
             self.mode = "COMMAND"
@@ -428,8 +510,6 @@ class EditorApp:
             self._repeat_search(-1)
         elif key in (CTRL_N, "\x0e"):
             self._goto_next_diagnostic(1)
-        elif key in (CTRL_P, "\x10"):
-            self._goto_next_diagnostic(-1)
         elif key in (CTRL_F, "\x06", "/"):
             self._search()
         elif key == "\x1d":
@@ -450,7 +530,30 @@ class EditorApp:
         if key in (ESCAPE, "\x1b", "q"):
             self.mode = "NORMAL"
             return False
+        if key in ("k", curses.KEY_UP, "KEY_UP"):
+            self._move_list_cursor(-1)
+            return False
+        if key in ("j", curses.KEY_DOWN, "KEY_DOWN"):
+            self._move_list_cursor(1)
+            return False
+        if key in ("\n", "\r"):
+            self._open_selected_list_item()
+            return False
         return False
+
+    def _move_list_cursor(self, delta: int) -> None:
+        if not self.list_lines:
+            self.list_cursor = 0
+            return
+        self.list_cursor = max(0, min(len(self.list_lines) - 1, self.list_cursor + delta))
+
+    def _open_selected_list_item(self) -> None:
+        if not self.list_actions or not (0 <= self.list_cursor < len(self.list_actions)):
+            self.mode = "NORMAL"
+            return
+        action = self.list_actions[self.list_cursor]
+        if callable(action):
+            action()
 
     def _handle_tree_key(self, key) -> bool:
         if key in (ESCAPE, "\x1b", "q"):
@@ -494,6 +597,9 @@ class EditorApp:
             return False
         if had_completions:
             self.completions = []
+        if key in (CTRL_P, "\x10"):
+            self._show_project_files()
+            return False
         if key in (curses.KEY_LEFT, "KEY_LEFT"):
             self.buffer.move_left()
             self._drop_stale_placeholders()
@@ -605,6 +711,21 @@ class EditorApp:
         if name == "open" and args:
             self._command_open(" ".join(args))
             return True
+        if name in ("files", "file"):
+            self._show_project_files()
+            return True
+        if name in ("buffers", "ls"):
+            self._show_buffers()
+            return True
+        if name in ("bn", "bnext"):
+            self._next_buffer(1)
+            return True
+        if name in ("bp", "bprevious", "bprev"):
+            self._next_buffer(-1)
+            return True
+        if name in ("bd", "bdelete"):
+            self._delete_current_buffer()
+            return True
         if name == "recent":
             self._show_recent_files()
             return True
@@ -662,6 +783,9 @@ class EditorApp:
         self.list_lines = [f"{symbol.row + 1}: {symbol.kind:<8} {symbol.name}" for symbol in index]
         if not self.list_lines:
             self.list_lines = ["No symbols"]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Symbols: " + " | ".join(self.list_lines[:3])
 
@@ -674,6 +798,9 @@ class EditorApp:
         ]
         if not self.list_lines:
             self.list_lines = ["No diagnostics"]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Diagnostics: " + " | ".join(self.list_lines[:3])
 
@@ -763,10 +890,55 @@ class EditorApp:
             return
         self._open_file(matches[0].path)
 
+    def _show_project_files(self) -> None:
+        self.project_files = self._ensure_project_files()
+        if not self.project_files:
+            self.status = "No project root"
+            return
+        files = sorted(self.project_files.files, key=lambda item: item.relative_path)
+        self.list_title = "Files"
+        self.list_lines = [item.relative_path for item in files] or ["No project files"]
+        self.list_actions = [lambda path=item.path: self._open_file_from_list(path) for item in files]
+        self.list_cursor = 0
+        self.list_row_offset = 0
+        self.mode = "LIST"
+        self.status = "Files: Enter open | j/k move | q close"
+
+    def _open_file_from_list(self, path: Path) -> None:
+        self._open_file(path)
+        self.mode = "NORMAL"
+
+    def _show_buffers(self) -> None:
+        self._sync_current_buffer_state()
+        self.list_title = "Buffers"
+        self.list_lines = []
+        self.list_actions = []
+        for index, item in enumerate(self.buffers):
+            current = "%" if index == self.current_buffer_index else " "
+            dirty = "+" if item.buffer.dirty else " "
+            label = self._current_buffer_label(item)
+            self.list_lines.append(f"{index + 1:>2} {current}{dirty} {label}")
+            self.list_actions.append(lambda buffer_index=index: self._open_buffer_from_list(buffer_index))
+        if not self.list_lines:
+            self.list_lines = ["No buffers"]
+        self.list_cursor = self.current_buffer_index if self.list_actions else 0
+        self.list_row_offset = 0
+        self.mode = "LIST"
+        self.status = "Buffers: Enter switch | :bn next | :bp previous | :bd delete"
+
+    def _open_buffer_from_list(self, index: int) -> None:
+        self._sync_current_buffer_state()
+        self._activate_buffer(index)
+        self.mode = "NORMAL"
+        self.status = f"Buffer {self.current_buffer_index + 1}/{len(self.buffers)}"
+
     def _show_recent_files(self) -> None:
         entries = RecentFilesStore(self.recent_store_path, self.config.recent_files_limit).load()
         self.list_title = "Recent"
         self.list_lines = entries or ["No recent files"]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Recent: " + " | ".join(self.list_lines[:3])
 
@@ -819,6 +991,9 @@ class EditorApp:
         ]
         if not self.list_lines:
             self.list_lines = ["No build errors"]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Build Errors: " + " | ".join(self.list_lines[:3])
 
@@ -827,27 +1002,69 @@ class EditorApp:
         self.list_lines = [
             "i/a/o/O insert | Esc normal | : command",
             ":w save | :w file save as | :q quit | :wq save quit",
-            ":e file open | :open fuzzy | :tree toggle | :tree open/close | :recent",
+            ":e file open/switch | :open fuzzy | :files quick open | Ctrl-P files",
+            ":buffers list | :bn/:bp next/previous | :bd delete clean buffer",
+            ":tree toggle | :tree open/close | :recent",
             "Tree: j/k move | Enter open/toggle dir | Ctrl-W switch | q close",
             ":goto line | :symbols | :diag | :help",
             ":make build | :run last output | :errors | :set key value",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
         ]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Help"
 
     def _open_file(self, path: Path) -> None:
-        if self.buffer.dirty:
-            self.status = "Unsaved changes. Save or :q! before :e."
+        path = path.expanduser()
+        existing = self._find_buffer_index(path)
+        self._sync_current_buffer_state()
+        if existing is not None:
+            self._activate_buffer(existing)
+            self.status = f"Switched to {path}"
             return
-        self.path = path
-        self.buffer = self._load_buffer(path)
-        self.undo = UndoManager()
-        self.row_offset = 0
-        self.col_offset = 0
-        self._reload_file_context()
+        if self.path is None and not self.buffer.dirty and self.buffer.to_text() == "":
+            target = self._current_editor_buffer()
+            target.path = path
+            target.buffer = self._load_buffer(path)
+            target.row_offset = 0
+            target.col_offset = 0
+            target.diagnostics = self.diagnostic_engine.analyze(target.buffer.lines)
+            target.undo = UndoManager()
+            target.auto_pair_placeholders = []
+            self._activate_buffer(self.current_buffer_index)
+        else:
+            target = EditorBuffer(path=path, buffer=self._load_buffer(path))
+            target.diagnostics = self.diagnostic_engine.analyze(target.buffer.lines)
+            self.buffers.append(target)
+            self._activate_buffer(len(self.buffers) - 1)
         self.status = f"Opened {path}"
         self._remember_recent_file(path)
+
+    def _next_buffer(self, delta: int) -> None:
+        if not self.buffers:
+            self.buffers = [EditorBuffer(None, TextBuffer())]
+            self.current_buffer_index = 0
+        self._sync_current_buffer_state()
+        next_index = (self.current_buffer_index + delta) % len(self.buffers)
+        self._activate_buffer(next_index)
+        self.status = f"Buffer {self.current_buffer_index + 1}/{len(self.buffers)}"
+
+    def _delete_current_buffer(self) -> None:
+        self._sync_current_buffer_state()
+        current = self._current_editor_buffer()
+        if current.buffer.dirty:
+            self.status = "E37: No write since last change (:bd! not supported)"
+            return
+        del self.buffers[self.current_buffer_index]
+        if not self.buffers:
+            self.buffers.append(EditorBuffer(None, TextBuffer()))
+            self.current_buffer_index = 0
+        else:
+            self.current_buffer_index = min(self.current_buffer_index, len(self.buffers) - 1)
+        self._activate_buffer(self.current_buffer_index)
+        self.status = f"Deleted buffer | Buf {self.current_buffer_index + 1}/{len(self.buffers)}"
 
     def _apply_set_command(self, args: list[str]) -> None:
         key = args[0]
@@ -1230,8 +1447,15 @@ class EditorApp:
     def _draw_list(self, text_height: int, width: int) -> None:
         title = f" {self.list_title} "
         self._safe_addnstr(0, 0, title.ljust(width), width - 1, curses.A_REVERSE)
-        for index, line in enumerate(self.list_lines[: max(0, text_height - 1)], start=1):
-            self._safe_addnstr(index, 0, line, width - 1)
+        visible_rows = max(0, text_height - 1)
+        if self.list_cursor < self.list_row_offset:
+            self.list_row_offset = self.list_cursor
+        elif self.list_cursor >= self.list_row_offset + visible_rows:
+            self.list_row_offset = max(0, self.list_cursor - visible_rows + 1)
+        for offset, line in enumerate(self.list_lines[self.list_row_offset : self.list_row_offset + visible_rows], start=1):
+            line_index = self.list_row_offset + offset - 1
+            attr = curses.A_REVERSE if line_index == self.list_cursor else curses.A_NORMAL
+            self._safe_addnstr(offset, 0, line.ljust(width), width - 1, attr)
 
     def _draw_tree(self, text_height: int, width: int) -> None:
         title = " Project "
@@ -1259,7 +1483,8 @@ class EditorApp:
         name = str(self.path) if self.path else "[No Name]"
         dirty = " +" if self.buffer.dirty else ""
         mode = "TREE" if self.tree_visible and self.tree_focused else self.mode
-        left = f" {mode} | {name}{dirty} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
+        buffer_position = f"Buf {self.current_buffer_index + 1}/{len(self.buffers)}"
+        left = f" {mode} | {name}{dirty} | {buffer_position} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
         self._safe_addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line

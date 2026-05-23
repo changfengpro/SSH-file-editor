@@ -93,11 +93,11 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Make sfe --version and sfe -v return from the shell launcher without starting Python.
-          - Start the editor as python -m sfe with PYTHONPATH set to the installed library directory.
-          - Ship precompiled sfe.py and sfe_core.py bytecode in the Debian package with the required cache directory.
-          - Publish release assets idempotently by overwriting existing asset names.
-          - Add regression coverage for the version fast path and packaged bytecode.
+          - Add multi-buffer editing with :buffers, :bn, :bp, and :bd.
+          - Add project quick-open through :files and Ctrl-P.
+          - Keep project tree visible while opening files into editor buffers.
+          - Preserve per-buffer cursor, scroll, diagnostics, undo, and unsaved edits.
+          - Show buffer position in the status line as Buf current/total.
 
           ## Verification
           - python3 -m unittest discover -s tests

@@ -40,6 +40,11 @@ Version 0.4.9 handles --version and -v directly in the launcher and ships
 precompiled editor bytecode, reducing Python import and compile work before the
 editor screen opens.
 .PP
+Version 0.5.0 adds a multi-buffer workspace. Opening files from :e, :open,
+:files, Ctrl-P, or the project tree switches to an existing buffer or creates a
+new buffer while keeping unsaved edits, cursor position, scroll position, undo
+history, and diagnostics in other buffers.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -90,8 +95,11 @@ Jump to the definition of the symbol under the cursor.
 .B Ctrl-O
 Jump back after a definition jump.
 .TP
-.B Ctrl-N, Ctrl-P
-Move to the next or previous editor diagnostic or build error.
+.B Ctrl-N
+Move to the next editor diagnostic or build error.
+.TP
+.B Ctrl-P
+Open the project file list in Normal or Insert mode.
 .TP
 .B :tree
 Toggle the left project tree pane.
@@ -104,7 +112,7 @@ Switch focus between the project tree pane and the editor window.
 .TP
 .B Enter
 In the project tree, expand or collapse the selected directory, or open the
-selected file in the editor window.
+selected file in the editor window as a buffer.
 .TP
 .B q, Esc
 Close the project tree pane when it has focus.
@@ -112,8 +120,26 @@ Close the project tree pane when it has focus.
 .B :open PATTERN
 Fuzzy-open the best matching project file.
 .TP
+.B :files
+Show project files. Press Enter on a selected file to open or switch to its
+buffer.
+.TP
 .B :recent
 Show recently opened project files.
+.TP
+.B :buffers
+Show open buffers. The current buffer is marked with %, and modified buffers are
+marked with +.
+.TP
+.B :bn, :bnext
+Switch to the next buffer, wrapping at the end.
+.TP
+.B :bp, :bprevious
+Switch to the previous buffer, wrapping at the beginning.
+.TP
+.B :bd, :bdelete
+Delete the current buffer if it has no unsaved changes. Deleting the last clean
+buffer creates a new empty [No Name] buffer.
 .TP
 .B :make
 Run the configured build command, or use make / gcc fallback.
@@ -137,7 +163,7 @@ Show lightweight C diagnostics.
 Show in-editor help.
 .TP
 .B :e FILE
-Open FILE, if there are no unsaved changes.
+Open FILE in a buffer. If FILE is already open, switch to its existing buffer.
 .TP
 .B :w FILE
 Save the current buffer as FILE.
