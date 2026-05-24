@@ -582,6 +582,43 @@ class EditorLayoutTests(unittest.TestCase):
 
         self.assertEqual(screen.calls, [])
 
+    def test_safe_draw_sanitizes_embedded_nulls(self):
+        screen = FakeDrawScreen()
+        app = EditorApp(stdscr=screen, path=None)
+
+        app._safe_addnstr(0, 0, "a\0b", 10)
+
+        self.assertIn((0, 0, "a?b", 0), screen.calls)
+
+    def test_startup_binary_file_shows_unsupported_file_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "test"
+            binary.write_bytes(b"\x7fELF\x00\x01\x02binary")
+            screen = FakeDrawScreen()
+            app = EditorApp(stdscr=screen, path=str(binary))
+
+            app._draw()
+
+        drawn = "\n".join(call[2] for call in screen.calls if len(call) == 4)
+        self.assertIsNone(app.path)
+        self.assertEqual(app.buffer.lines, [""])
+        self.assertIn("Unsupported file", drawn)
+        self.assertIn("contains NUL bytes", drawn)
+
+    def test_startup_invalid_utf8_file_shows_unsupported_file_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "bad.txt"
+            binary.write_bytes(b"\xff\xfe\xfd")
+            screen = FakeDrawScreen()
+            app = EditorApp(stdscr=screen, path=str(binary))
+
+            app._draw()
+
+        drawn = "\n".join(call[2] for call in screen.calls if len(call) == 4)
+        self.assertIsNone(app.path)
+        self.assertIn("Unsupported file", drawn)
+        self.assertIn("not valid UTF-8", drawn)
+
     def test_draw_with_tree_does_not_crash_on_narrow_editor_pane(self):
         screen = BoundsCheckingDrawScreen(height=8, width=28)
         app = EditorApp(stdscr=screen, path=None)
@@ -703,6 +740,22 @@ class EditorNormalModeTests(unittest.TestCase):
 
             self.assertEqual(app.path, target)
             self.assertEqual(app.buffer.lines, ["int next;", ""])
+
+    def test_command_edit_rejects_binary_file_and_keeps_current_buffer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "main.c"
+            binary = root / "test"
+            current.write_text("int main;\n", encoding="utf-8")
+            binary.write_bytes(b"\x7fELF\x00\x01binary")
+            app = EditorApp(stdscr=None, path=str(current))
+
+            app._execute_command(f"e {binary}")
+
+        self.assertEqual(app.path, current)
+        self.assertEqual(app.buffer.lines, ["int main;", ""])
+        self.assertEqual(len(app.buffers), 1)
+        self.assertIn("Unsupported file", app.status)
 
     def test_command_edit_opens_second_buffer_without_discarding_dirty_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1067,6 +1120,26 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertTrue(app.tree_visible)
         self.assertFalse(app.tree_focused)
 
+    def test_tree_enter_rejects_binary_file_and_keeps_current_buffer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc test\n", encoding="utf-8")
+            current = root / "main.c"
+            binary = root / "test"
+            current.write_text("int current;\n", encoding="utf-8")
+            binary.write_bytes(b"\x7fELF\x00binary")
+            app = EditorApp(stdscr=None, path=str(current))
+            app._execute_command("tree")
+
+            paths = [entry.relative_path for entry in app.tree_entries]
+            app.tree_cursor = paths.index("test")
+            app._handle_key("\n")
+
+        self.assertEqual(app.path, current)
+        self.assertEqual(len(app.buffers), 1)
+        self.assertIn("Unsupported file", app.status)
+        self.assertTrue(app.startup_dialog)
+
     def test_tree_ctrl_w_toggles_focus_and_q_closes_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1137,6 +1210,25 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(app.path, target)
         self.assertEqual(app.buffer.lines[0], "int src;")
         self.assertEqual(app.mode, "NORMAL")
+
+    def test_files_command_rejects_binary_file_and_keeps_current_buffer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            current = root / "main.c"
+            binary = root / "test"
+            current.write_text("int main;\n", encoding="utf-8")
+            binary.write_bytes(b"\x7fELF\x00binary")
+            app = EditorApp(stdscr=None, path=str(current))
+
+            app._execute_command("files")
+            app.list_cursor = app.list_lines.index("test")
+            app._handle_list_key("\n")
+
+        self.assertEqual(app.path, current)
+        self.assertEqual(app.buffer.lines[0], "int main;")
+        self.assertEqual(len(app.buffers), 1)
+        self.assertIn("Unsupported file", app.status)
 
     def test_ctrl_p_opens_project_files_list(self):
         with tempfile.TemporaryDirectory() as tmp:

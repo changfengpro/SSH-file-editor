@@ -57,6 +57,9 @@ including 546 for Ctrl-Left on xterm-compatible terminals, and rejects
 shortcuts that conflict with terminal, shell/readline, tmux/screen, Vim, or
 built-in SFE behavior.
 .PP
+Opening binary files, files containing NUL bytes, or files that are not valid
+UTF-8 shows an unsupported-file dialog instead of crashing the terminal UI.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching

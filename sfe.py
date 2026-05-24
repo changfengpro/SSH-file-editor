@@ -174,6 +174,13 @@ class EditorBuffer:
     auto_pair_placeholders: list[tuple[int, int, str]] = field(default_factory=list)
 
 
+class UnsupportedFileError(ValueError):
+    def __init__(self, path: Path, reason: str):
+        super().__init__(reason)
+        self.path = path
+        self.reason = reason
+
+
 def load_config(
     path: Path | None = None,
     *,
@@ -273,7 +280,13 @@ class EditorApp:
         self.highlighter = SyntaxHighlighter()
         self.syntax_attrs = {"plain": 0}
         self.path: Path | None = initial_path
-        self.buffer = self._load_buffer(initial_path)
+        self.startup_dialog: tuple[str, list[str]] | None = None
+        try:
+            self.buffer = self._load_buffer(initial_path)
+        except UnsupportedFileError as exc:
+            self.path = None
+            self.buffer = TextBuffer()
+            self.startup_dialog = self._unsupported_file_dialog(exc.path, exc.reason)
         self.row_offset = 0
         self.col_offset = 0
         self.diagnostic_engine = CDiagnosticEngine()
@@ -363,8 +376,25 @@ class EditorApp:
     def _load_buffer(self, path: Path | None) -> TextBuffer:
         if not path or not path.exists():
             return TextBuffer()
-        text = path.read_text(encoding="utf-8", errors="replace")
+        data = path.read_bytes()
+        if b"\x00" in data:
+            raise UnsupportedFileError(path, "contains NUL bytes")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise UnsupportedFileError(path, f"is not valid UTF-8 at byte {exc.start}") from exc
         return TextBuffer.from_text(text)
+
+    def _unsupported_file_dialog(self, path: Path, reason: str) -> tuple[str, list[str]]:
+        return (
+            "Unsupported file",
+            [
+                f"{path}",
+                reason,
+                "SFE only edits UTF-8 text files.",
+                "Press any key to continue.",
+            ],
+        )
 
     def _current_editor_buffer(self) -> EditorBuffer:
         return self.buffers[self.current_buffer_index]
@@ -496,6 +526,9 @@ class EditorApp:
         self._remember_recent_file(self.path)
 
     def _handle_key(self, key) -> bool:
+        if self.startup_dialog:
+            self.startup_dialog = None
+            return False
         if self.mode == "BIND":
             return self._handle_bind_key(key)
         if self.mode == "COMMAND":
@@ -1197,10 +1230,16 @@ class EditorApp:
             self._activate_buffer(existing)
             self.status = f"Switched to {path}"
             return
+        try:
+            new_buffer = self._load_buffer(path)
+        except UnsupportedFileError as exc:
+            self.startup_dialog = self._unsupported_file_dialog(exc.path, exc.reason)
+            self.status = f"Unsupported file: {exc.path} ({exc.reason})"
+            return
         if self.path is None and not self.buffer.dirty and self.buffer.to_text() == "":
             target = self._current_editor_buffer()
             target.path = path
-            target.buffer = self._load_buffer(path)
+            target.buffer = new_buffer
             target.row_offset = 0
             target.col_offset = 0
             target.diagnostics = self.diagnostic_engine.analyze(target.buffer.lines)
@@ -1208,7 +1247,7 @@ class EditorApp:
             target.auto_pair_placeholders = []
             self._activate_buffer(self.current_buffer_index)
         else:
-            target = EditorBuffer(path=path, buffer=self._load_buffer(path))
+            target = EditorBuffer(path=path, buffer=new_buffer)
             target.diagnostics = self.diagnostic_engine.analyze(target.buffer.lines)
             self.buffers.append(target)
             self._activate_buffer(len(self.buffers) - 1)
@@ -1611,6 +1650,8 @@ class EditorApp:
             self._draw_code_line(screen_row, gutter_width, self.buffer.lines[file_row], editor_width, editor_x)
         self._draw_completions(text_height, editor_width, gutter_width, editor_x)
         self._draw_status(height, width)
+        if self.startup_dialog:
+            self._draw_dialog(width, text_height + 2, self.startup_dialog[0], self.startup_dialog[1])
         cursor_y = self.buffer.cursor_row - self.row_offset
         cursor_x = self._cursor_screen_x()
         if self.tree_visible and self.tree_focused:
@@ -1619,6 +1660,20 @@ class EditorApp:
         if 0 <= cursor_y < text_height and 0 <= cursor_x < width:
             self.stdscr.move(cursor_y, cursor_x)
         self.stdscr.refresh()
+
+    def _draw_dialog(self, width: int, height: int, title: str, lines: list[str]) -> None:
+        content_width = max([display_width(title), *(display_width(line) for line in lines)], default=0)
+        box_width = min(max(34, content_width + 4), max(10, width - 2))
+        box_height = min(len(lines) + 4, max(4, height))
+        top = max(0, (height - box_height) // 2)
+        left = max(0, (width - box_width) // 2)
+        self._safe_addnstr(top, left, "+" + "-" * (box_width - 2) + "+", box_width, curses.A_REVERSE)
+        self._safe_addnstr(top + 1, left, f"| {title[: max(0, box_width - 4)]:<{max(0, box_width - 4)}} |", box_width, curses.A_REVERSE)
+        visible_lines = lines[: max(0, box_height - 3)]
+        for offset, line in enumerate(visible_lines, start=2):
+            clipped = clip_display_width(line, max(0, box_width - 4))
+            self._safe_addnstr(top + offset, left, f"| {clipped:<{max(0, box_width - 4)}} |", box_width, curses.A_NORMAL)
+        self._safe_addnstr(top + box_height - 1, left, "+" + "-" * (box_width - 2) + "+", box_width, curses.A_REVERSE)
 
     def _draw_list(self, text_height: int, width: int) -> None:
         title = f" {self.list_title} "
@@ -1676,6 +1731,7 @@ class EditorApp:
     def _safe_addnstr(self, row: int, col: int, text: str, max_width: int, attr: int = 0) -> None:
         if not text or max_width <= 0:
             return
+        text = text.replace("\x00", "?")
         height, width = self.stdscr.getmaxyx()
         if row < 0 or row >= height or col < 0 or col >= width:
             return
@@ -1687,7 +1743,7 @@ class EditorApp:
             return
         try:
             self.stdscr.addnstr(row, col, clipped, len(clipped), attr)
-        except curses.error:
+        except (curses.error, ValueError):
             return
 
     def _draw_code_line(self, screen_row: int, gutter_width: int, line: str, width: int, x_offset: int = 0) -> None:
