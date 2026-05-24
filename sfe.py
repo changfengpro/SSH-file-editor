@@ -332,6 +332,7 @@ class EditorApp:
         self.list_cursor = 0
         self.list_row_offset = 0
         self.list_actions: list[object] = []
+        self.list_kind = ""
         self.jump_stack: list[tuple[Path | None, int, int]] = []
         self.tree_visible = False
         self.tree_focused = False
@@ -671,6 +672,9 @@ class EditorApp:
         if key in (ESCAPE, "\x1b", "q"):
             self.mode = "NORMAL"
             return False
+        if key == "r" and self.list_kind == "run-output":
+            self._run_last_command()
+            return False
         if key in ("k", curses.KEY_UP, "KEY_UP"):
             self._move_list_cursor(-1)
             return False
@@ -899,11 +903,19 @@ class EditorApp:
             command = command[1:].strip()
         if not command:
             return False
+        if command.isdigit():
+            return self._command_goto(command)
+        if command.startswith("!"):
+            self._run_bang_command(command[1:].strip())
+            return True
         parts = command.split()
         name = parts[0]
         args = parts[1:]
         if name in ("goto", "go") and args:
             return self._command_goto(args[0])
+        if name == "pwd":
+            self._command_pwd()
+            return True
         if name in ("symbols", "symbol"):
             self._show_symbols()
             return True
@@ -972,6 +984,10 @@ class EditorApp:
         self.status = f"Moved to line {line_no}"
         return True
 
+    def _command_pwd(self) -> None:
+        path = self.project_root or (self.path.parent if self.path else Path.cwd())
+        self.status = str(path)
+
     def _toggle_project_tree(self, action: str = "") -> None:
         action = action.lower()
         if action in ("close", "hide", "off"):
@@ -991,6 +1007,7 @@ class EditorApp:
         self.list_lines = [f"{symbol.row + 1}: {symbol.kind:<8} {symbol.name}" for symbol in index]
         if not self.list_lines:
             self.list_lines = ["No symbols"]
+        self.list_kind = "symbols"
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0
@@ -1006,6 +1023,7 @@ class EditorApp:
         ]
         if not self.list_lines:
             self.list_lines = ["No diagnostics"]
+        self.list_kind = "diagnostics"
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0
@@ -1115,6 +1133,7 @@ class EditorApp:
         files = sorted(self.project_files.files, key=lambda item: item.relative_path)
         self.list_title = "Files"
         self.list_lines = [item.relative_path for item in files] or ["No project files"]
+        self.list_kind = "files"
         self.list_actions = [lambda path=item.path: self._open_file_from_list(path) for item in files]
         self.list_cursor = 0
         self.list_row_offset = 0
@@ -1138,6 +1157,7 @@ class EditorApp:
             self.list_actions.append(lambda buffer_index=index: self._open_buffer_from_list(buffer_index))
         if not self.list_lines:
             self.list_lines = ["No buffers"]
+        self.list_kind = "buffers"
         self.list_cursor = self.current_buffer_index if self.list_actions else 0
         self.list_row_offset = 0
         self.mode = "LIST"
@@ -1153,6 +1173,7 @@ class EditorApp:
         entries = RecentFilesStore(self.recent_store_path, self.config.recent_files_limit).load()
         self.list_title = "Recent"
         self.list_lines = entries or ["No recent files"]
+        self.list_kind = "recent"
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0
@@ -1173,6 +1194,9 @@ class EditorApp:
         self.last_run_command = self.config.run_command.strip() or result.run_command
         self._set_build_output(output, completed.returncode)
         self._reload_project_files()
+        if completed.returncode != 0:
+            status = self.status
+            self._show_build_errors(status)
 
     def _run_last_command(self) -> None:
         command = self.config.run_command.strip() or self.last_run_command
@@ -1194,6 +1218,16 @@ class EditorApp:
     def _run_shell_command(self, command: str, cwd: Path):
         return subprocess.run(command, cwd=cwd, capture_output=True, text=True, shell=True)
 
+    def _run_bang_command(self, command: str) -> None:
+        if not command:
+            self.status = "No shell command"
+            return
+        project_root = self.project_root or (self.path.parent if self.path else Path.cwd())
+        completed = self.build_runner(command, project_root)
+        output = (completed.stdout or "") + (completed.stderr or "")
+        status = f"Shell OK: {command}" if completed.returncode == 0 else f"Shell failed ({completed.returncode}): {command}"
+        self._show_command_output("Shell Output", output, status, "shell-output")
+
     def _set_build_output(self, output: str, returncode: int) -> None:
         self.build_output = output
         self.build_diagnostics = BuildOutputParser().parse(output)
@@ -1203,14 +1237,20 @@ class EditorApp:
             self.status = f"Build failed ({returncode}): {len(self.build_diagnostics)} diagnostics"
 
     def _show_run_output(self, output: str) -> None:
-        self.list_title = "Run Output"
+        status = f"{self.status} | r rerun | q close"
+        self._show_command_output("Run Output", output, status, "run-output")
+
+    def _show_command_output(self, title: str, output: str, status: str, kind: str) -> None:
+        self.list_title = title
         self.list_lines = output.splitlines() or ["<no output>"]
+        self.list_kind = kind
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0
         self.mode = "LIST"
+        self.status = status
 
-    def _show_build_errors(self) -> None:
+    def _show_build_errors(self, status: str | None = None) -> None:
         self.list_title = "Build Errors"
         self.list_lines = [
             f"{diag.path.as_posix()}:{diag.row + 1}:{diag.col + 1} {diag.severity}: {diag.message}"
@@ -1218,11 +1258,12 @@ class EditorApp:
         ]
         if not self.list_lines:
             self.list_lines = ["No build errors"]
+        self.list_kind = "build-errors"
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0
         self.mode = "LIST"
-        self.status = "Build Errors: " + " | ".join(self.list_lines[:3])
+        self.status = status or ("Build Errors: " + " | ".join(self.list_lines[:3]))
 
     def _show_help(self) -> None:
         self.list_title = "Help"
@@ -1233,10 +1274,11 @@ class EditorApp:
             ":buffers list | :bn/:bp next/previous | :bd delete clean buffer",
             ":bind bn map shortcut | :tree toggle | :tree open/close | :recent",
             "Tree: Ctrl-W open/switch | j/k move | Enter open/toggle dir | q close",
-            ":goto line | :symbols | :diag | :help",
-            ":make build | :run last output | :errors | :set key value",
+            ":goto line | :42 line jump | :pwd | :!cmd shell | :symbols | :diag",
+            ":make build | :run last output | :errors | :set key value | :help",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
         ]
+        self.list_kind = "help"
         self.list_actions = []
         self.list_cursor = 0
         self.list_row_offset = 0

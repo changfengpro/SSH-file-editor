@@ -67,6 +67,9 @@ Version 0.5.5 refreshes the visible project tree after :make, accepts : while
 the project tree has focus, and opens a Run Output list when :run prints stdout
 or stderr.
 .PP
+Version 0.5.6 opens Build Errors automatically when :make fails, lets r rerun
+from the Run Output list, and adds :N, :pwd, and :!cmd workflow commands.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -181,16 +184,27 @@ the status line. Prefer low-conflict shortcuts such as F3 through F9 or
 Ctrl-arrow keys.
 .TP
 .B :make
-Run the configured build command, or use make / gcc fallback.
+Run the configured build command, or use make / gcc fallback. Failed builds open
+the Build Errors list automatically.
 .TP
 .B :run
-Run the configured run command or the last detected build output.
+Run the configured run command or the last detected build output. In Run Output,
+press r to rerun the same command.
 .TP
 .B :errors
 Show compiler errors and warnings captured by :make.
 .TP
+.B :N
+Move to line N, for example :42.
+.TP
 .B :goto N
 Move to line N.
+.TP
+.B :pwd
+Show the current project root or working directory in the status line.
+.TP
+.B :!cmd
+Run cmd in the project root and show stdout and stderr in a list.
 .TP
 .B :symbols
 Show symbols found in the current file.

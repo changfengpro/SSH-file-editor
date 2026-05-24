@@ -93,9 +93,9 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Refresh the visible project tree after :make so newly generated files appear without reopening SFE.
-          - Let : enter command mode while the project tree has focus.
-          - Show stdout and stderr from :run in a Run Output list instead of only reporting OK in the status bar.
+          - Open Build Errors automatically when :make fails.
+          - Let r rerun the last command directly from the Run Output list.
+          - Add Vim-style :N line jumps, :pwd, and :!cmd shell output commands.
 
           ## Verification
           - python3 -m unittest discover -s tests

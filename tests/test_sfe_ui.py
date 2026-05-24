@@ -693,6 +693,49 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 0))
         self.assertIn("line 3", app.status)
 
+    def test_command_numeric_line_jump_matches_vim(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two", "three"]
+
+        app._execute_command("2")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
+        self.assertIn("line 2", app.status)
+
+    def test_command_pwd_reports_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._execute_command("pwd")
+
+        self.assertEqual(app.status, str(root))
+
+    def test_bang_command_runs_shell_and_shows_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            calls = []
+
+            def runner(command, cwd):
+                calls.append((command, cwd))
+                return subprocess.CompletedProcess(command, 0, stdout="shell out\n", stderr="")
+
+            app.build_runner = runner
+
+            app._execute_command("!printf shell")
+
+        self.assertEqual(calls, [("printf shell", root)])
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Shell Output")
+        self.assertEqual(app.list_lines, ["shell out"])
+        self.assertIn("Shell OK", app.status)
+
     def test_command_symbols_lists_current_file_symbols(self):
         app = EditorApp(stdscr=None, path=None)
         app.buffer.lines = ["int add(int a, int b) {", "    return a + b;", "}"]
@@ -1322,6 +1365,9 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(calls, [("make test", root)])
             self.assertEqual(len(app.build_diagnostics), 1)
             self.assertIn("Build failed", app.status)
+            self.assertEqual(app.mode, "LIST")
+            self.assertEqual(app.list_title, "Build Errors")
+            self.assertIn("bad main", "\n".join(app.list_lines))
 
     def test_command_make_refreshes_visible_project_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1381,6 +1427,29 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(app.list_title, "Run Output")
         self.assertEqual(app.list_lines[:2], ["Hello, World!", "line two"])
         self.assertIn("Run OK", app.status)
+
+    def test_run_output_list_reruns_last_command_with_r(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(run_command="./demo"))
+            calls = []
+
+            def runner(command, cwd):
+                calls.append((command, cwd))
+                return subprocess.CompletedProcess(command, 0, stdout=f"run {len(calls)}\n", stderr="")
+
+            app.build_runner = runner
+
+            app._execute_command("run")
+            app._handle_list_key("r")
+
+        self.assertEqual(calls, [("./demo", root), ("./demo", root)])
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Run Output")
+        self.assertEqual(app.list_lines, ["run 2"])
+        self.assertIn("r rerun", app.status)
 
     def test_command_errors_lists_build_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
