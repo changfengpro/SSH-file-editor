@@ -1079,6 +1079,22 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertTrue(app.tree_focused)
         self.assertEqual(app.mode, "NORMAL")
 
+    def test_colon_enters_command_mode_from_tree_focus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            app._execute_command("tree")
+
+            app._handle_key(":")
+
+        self.assertEqual(app.mode, "COMMAND")
+        self.assertEqual(app.command_line, "")
+        self.assertFalse(app.tree_focused)
+        self.assertTrue(app.tree_visible)
+
     def test_tree_enter_toggles_directory_and_opens_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1307,6 +1323,27 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(len(app.build_diagnostics), 1)
             self.assertIn("Build failed", app.status)
 
+    def test_command_make_refreshes_visible_project_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc main.c -o test\n", encoding="utf-8")
+            source = root / "main.c"
+            binary = root / "test"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(build_command="make"))
+            app._execute_command("tree")
+            self.assertNotIn("test", [entry.relative_path for entry in app.tree_entries])
+
+            def runner(command, cwd):
+                binary.write_bytes(b"\x7fELF\x00binary")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            app.build_runner = runner
+
+            app._execute_command("make")
+
+        self.assertIn("test", [entry.relative_path for entry in app.tree_entries])
+
     def test_command_run_uses_configured_run_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1325,6 +1362,25 @@ class EditorNormalModeTests(unittest.TestCase):
 
             self.assertEqual(calls, [("./demo", root)])
             self.assertIn("Run OK", app.status)
+
+    def test_command_run_opens_output_list_when_program_prints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(run_command="./demo"))
+
+            def runner(command, cwd):
+                return subprocess.CompletedProcess(command, 0, stdout="Hello, World!\nline two\n", stderr="")
+
+            app.build_runner = runner
+
+            app._execute_command("run")
+
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Run Output")
+        self.assertEqual(app.list_lines[:2], ["Hello, World!", "line two"])
+        self.assertIn("Run OK", app.status)
 
     def test_command_errors_lists_build_errors(self):
         with tempfile.TemporaryDirectory() as tmp:

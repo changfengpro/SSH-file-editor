@@ -498,6 +498,12 @@ class EditorApp:
             self.project_files_loaded = True
         return self.project_files
 
+    def _reload_project_files(self) -> None:
+        self.project_files_loaded = False
+        self.project_files = self._ensure_project_files()
+        if self.tree_visible:
+            self._refresh_tree_entries()
+
     def _reload_file_context(self) -> None:
         self.project_root = self._find_project_root()
         self.recent_store_path = self._default_recent_store_path()
@@ -750,6 +756,11 @@ class EditorApp:
     def _handle_tree_key(self, key) -> bool:
         if key in (ESCAPE, "\x1b", "q"):
             self._close_tree()
+            return False
+        if key == ":":
+            self.mode = "COMMAND"
+            self.command_line = ""
+            self.tree_focused = False
             return False
         if key in (CTRL_W, "\x17"):
             self._toggle_tree_focus()
@@ -1161,6 +1172,7 @@ class EditorApp:
         self.last_build_command = result.command
         self.last_run_command = self.config.run_command.strip() or result.run_command
         self._set_build_output(output, completed.returncode)
+        self._reload_project_files()
 
     def _run_last_command(self) -> None:
         command = self.config.run_command.strip() or self.last_run_command
@@ -1177,6 +1189,7 @@ class EditorApp:
         self.status = f"Run OK: {command}" if completed.returncode == 0 else f"Run failed ({completed.returncode}): {command}"
         if output:
             self.build_output = output
+            self._show_run_output(output)
 
     def _run_shell_command(self, command: str, cwd: Path):
         return subprocess.run(command, cwd=cwd, capture_output=True, text=True, shell=True)
@@ -1188,6 +1201,14 @@ class EditorApp:
             self.status = f"Build OK: {len(self.build_diagnostics)} diagnostics"
         else:
             self.status = f"Build failed ({returncode}): {len(self.build_diagnostics)} diagnostics"
+
+    def _show_run_output(self, output: str) -> None:
+        self.list_title = "Run Output"
+        self.list_lines = output.splitlines() or ["<no output>"]
+        self.list_actions = []
+        self.list_cursor = 0
+        self.list_row_offset = 0
+        self.mode = "LIST"
 
     def _show_build_errors(self) -> None:
         self.list_title = "Build Errors"
