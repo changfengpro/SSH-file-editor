@@ -60,6 +60,9 @@ built-in SFE behavior.
 Opening binary files, files containing NUL bytes, or files that are not valid
 UTF-8 shows an unsupported-file dialog instead of crashing the terminal UI.
 .PP
+Version 0.5.4 keeps the current buffer unchanged when unsupported files are
+opened from startup, :e, :files, or the project tree.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching

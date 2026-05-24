@@ -93,10 +93,10 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Use terminal key names to distinguish real Ctrl-arrow keys from Shift/Alt arrows.
-          - Fix Ctrl-Left on xterm-compatible terminals where curses reports 546 / kLFT5.
-          - Reject shortcuts that conflict with terminal, shell/readline, tmux/screen, Vim, or built-in SFE behavior.
-          - Support low-conflict function-key command bindings such as F3 through F9.
+          - Reject binary files, files containing NUL bytes, and invalid UTF-8 files before drawing them.
+          - Show an unsupported-file terminal dialog instead of crashing on executable files.
+          - Keep the current buffer unchanged when unsupported files are opened from :e, :files, or the project tree.
+          - Sanitize embedded NUL characters in the drawing fallback to protect curses rendering.
 
           ## Verification
           - python3 -m unittest discover -s tests
