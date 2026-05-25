@@ -85,6 +85,16 @@ class FakeDrawScreen:
         self.calls.append(("refresh",))
 
 
+class SizedDrawScreen(FakeDrawScreen):
+    def __init__(self, height=20, width=80):
+        super().__init__()
+        self.height = height
+        self.width = width
+
+    def getmaxyx(self):
+        return (self.height, self.width)
+
+
 class BoundsCheckingDrawScreen(FakeDrawScreen):
     def __init__(self, height=20, width=24):
         super().__init__()
@@ -552,6 +562,29 @@ class EditorLayoutTests(unittest.TestCase):
         status_rows = [call[2] for call in screen.calls]
         self.assertTrue(any("Buf 2/2" in row for row in status_rows))
 
+    def test_status_line_marks_dirty_buffer_clearly(self):
+        screen = FakeDrawScreen()
+        app = EditorApp(stdscr=screen, path=None)
+        app.buffer.dirty = True
+
+        app._draw_status(10, 120)
+
+        status_rows = [call[2] for call in screen.calls]
+        self.assertTrue(any("DIRTY" in row for row in status_rows))
+
+    def test_status_line_marks_read_only_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "read_only.c"
+            target.write_text("int value;\n", encoding="utf-8")
+            screen = FakeDrawScreen()
+            app = EditorApp(stdscr=screen, path=str(target))
+            app._is_read_only_path = lambda path: True
+
+            app._draw_status(10, 120)
+
+        status_rows = [call[2] for call in screen.calls]
+        self.assertTrue(any("RO" in row for row in status_rows))
+
     def test_auto_pair_placeholder_draws_dimmed_closer(self):
         screen = FakeDrawScreen()
         app = EditorApp(stdscr=screen, path=None)
@@ -676,6 +709,39 @@ class EditorNormalModeTests(unittest.TestCase):
         app._handle_normal_key("N")
 
         self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 0))
+
+    def test_normal_mode_gg_jumps_to_file_start(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two", "three"]
+        app.buffer.cursor_row = 2
+        app.buffer.cursor_col = 3
+
+        app._handle_normal_key("g")
+        app._handle_normal_key("g")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 0))
+
+    def test_normal_mode_g_jumps_to_file_end(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two", "three"]
+        app.buffer.cursor_row = 0
+        app.buffer.cursor_col = 5
+
+        app._handle_normal_key("G")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (2, 5))
+
+    def test_normal_mode_ctrl_d_and_ctrl_u_move_half_page(self):
+        screen = SizedDrawScreen(height=12, width=80)
+        app = EditorApp(stdscr=screen, path=None)
+        app.buffer.lines = [f"line {index}" for index in range(40)]
+
+        app._handle_normal_key("\x04")
+        after_down = app.buffer.cursor_row
+        app._handle_normal_key("\x15")
+
+        self.assertEqual(after_down, 5)
+        self.assertEqual(app.buffer.cursor_row, 0)
 
     def test_normal_mode_repeat_search_without_query_updates_status(self):
         app = EditorApp(stdscr=None, path=None)
@@ -860,6 +926,49 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertIn("%", joined)
         self.assertIn("one.c", joined)
         self.assertIn("two.c", joined)
+
+    def test_quit_with_dirty_buffers_opens_unsaved_buffers_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app.mode = "INSERT"
+            app._handle_insert_key("x")
+            app.mode = "NORMAL"
+            app._execute_command(f"e {second}")
+            app.mode = "INSERT"
+            app._handle_insert_key("y")
+            app.mode = "NORMAL"
+
+            should_quit = app._execute_command("q")
+
+        self.assertFalse(should_quit)
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Unsaved Buffers")
+        joined = "\n".join(app.list_lines)
+        self.assertIn("one.c", joined)
+        self.assertIn("two.c", joined)
+
+    def test_quit_shortcut_with_dirty_buffer_opens_unsaved_buffers_list(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["changed"]
+        app.buffer.dirty = True
+
+        should_quit = app._handle_normal_key("\x11")
+
+        self.assertFalse(should_quit)
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Unsaved Buffers")
+
+    def test_forced_quit_ignores_dirty_buffers(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["changed"]
+        app.buffer.dirty = True
+
+        self.assertTrue(app._execute_command("q!"))
 
     def test_buffer_next_previous_wrap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1365,9 +1474,27 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertEqual(calls, [("make test", root)])
             self.assertEqual(len(app.build_diagnostics), 1)
             self.assertIn("Build failed", app.status)
+            self.assertIn("in 0.", app.status)
             self.assertEqual(app.mode, "LIST")
             self.assertEqual(app.list_title, "Build Errors")
             self.assertIn("bad main", "\n".join(app.list_lines))
+
+    def test_command_make_reports_elapsed_time_on_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(build_command="make"))
+
+            def runner(command, cwd):
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            app.build_runner = runner
+
+            with mock.patch("sfe.time.perf_counter", side_effect=[10.0, 10.32]):
+                app._execute_command("make")
+
+        self.assertIn("Build OK in 0.32s", app.status)
 
     def test_command_make_refreshes_visible_project_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1408,6 +1535,23 @@ class EditorNormalModeTests(unittest.TestCase):
 
             self.assertEqual(calls, [("./demo", root)])
             self.assertIn("Run OK", app.status)
+
+    def test_command_run_reports_elapsed_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(run_command="./demo"))
+
+            def runner(command, cwd):
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            app.build_runner = runner
+
+            with mock.patch("sfe.time.perf_counter", side_effect=[20.0, 20.11]):
+                app._execute_command("run")
+
+        self.assertIn("Run OK in 0.11s", app.status)
 
     def test_command_run_opens_output_list_when_program_prints(self):
         with tempfile.TemporaryDirectory() as tmp:

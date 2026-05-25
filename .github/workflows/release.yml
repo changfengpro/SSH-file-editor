@@ -93,9 +93,9 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Open Build Errors automatically when :make fails.
-          - Let r rerun the last command directly from the Run Output list.
-          - Add Vim-style :N line jumps, :pwd, and :!cmd shell output commands.
+          - Add Vim-style gg, G, Ctrl-D, and Ctrl-U movement in Normal mode.
+          - Show an Unsaved Buffers list when :q or quit shortcuts encounter dirty buffers.
+          - Make the status bar show DIRTY / RO markers and report :make / :run elapsed time.
 
           ## Verification
           - python3 -m unittest discover -s tests

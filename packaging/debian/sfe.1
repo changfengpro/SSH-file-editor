@@ -70,6 +70,10 @@ or stderr.
 Version 0.5.6 opens Build Errors automatically when :make fails, lets r rerun
 from the Run Output list, and adds :N, :pwd, and :!cmd workflow commands.
 .PP
+Version 0.5.7 adds gg, G, Ctrl-D, and Ctrl-U movement, shows an Unsaved Buffers
+list when :q or quit shortcuts find modified buffers, marks DIRTY and RO files
+in the status line, and reports elapsed time for :make and :run.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -94,7 +98,8 @@ Return to Normal mode.
 Save the current file.
 .TP
 .B :q
-Quit if there are no unsaved changes.
+Quit if there are no unsaved changes. If any buffer is modified, show the
+Unsaved Buffers list instead of exiting.
 .TP
 .B :q!
 Quit without saving changes.
@@ -113,6 +118,15 @@ Repeat the last search forward.
 .TP
 .B N
 Repeat the last search backward.
+.TP
+.B gg
+Jump to the beginning of the file.
+.TP
+.B G
+Jump to the end of the file.
+.TP
+.B Ctrl-D, Ctrl-U
+Move down or up by half a screen.
 .TP
 .B Ctrl-]
 Jump to the definition of the symbol under the cursor.
@@ -185,11 +199,11 @@ Ctrl-arrow keys.
 .TP
 .B :make
 Run the configured build command, or use make / gcc fallback. Failed builds open
-the Build Errors list automatically.
+the Build Errors list automatically. The status line reports elapsed time.
 .TP
 .B :run
 Run the configured run command or the last detected build output. In Run Output,
-press r to rerun the same command.
+press r to rerun the same command. The status line reports elapsed time.
 .TP
 .B :errors
 Show compiler errors and warnings captured by :make.
@@ -244,7 +258,8 @@ and
 .PP
 Diagnostics report unmatched brackets, unterminated strings, duplicate includes,
 and simple missing semicolons. The status line shows the current diagnostic
-count.
+count, buffer position, DIRTY marker for modified buffers, and RO marker for
+read-only files.
 .SH CONFIGURATION
 User configuration is read from
 .B ~/.config/sfe/config.json

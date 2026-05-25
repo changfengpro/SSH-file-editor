@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -48,6 +49,8 @@ CTRL_F = 6
 CTRL_N = 14
 CTRL_P = 16
 CTRL_W = 23
+CTRL_D = 4
+CTRL_U = 21
 CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
@@ -326,6 +329,7 @@ class EditorApp:
         self.completions = []
         self.completion_index = 0
         self.quit_warning = False
+        self.pending_normal_key = ""
         self.last_search_query = ""
         self.list_title = ""
         self.list_lines: list[str] = []
@@ -583,7 +587,18 @@ class EditorApp:
     def _handle_normal_key(self, key) -> bool:
         self.completions = []
         if self._run_keybinding(key):
+            self.pending_normal_key = ""
             return False
+        if self.pending_normal_key == "g":
+            self.pending_normal_key = ""
+            if key == "g":
+                self._move_file_start()
+                return False
+        elif key == "g":
+            self.pending_normal_key = "g"
+            return False
+        else:
+            self.pending_normal_key = ""
         if key in (CTRL_W, "\x17") and self.tree_visible:
             self._toggle_tree_focus()
             return False
@@ -633,6 +648,12 @@ class EditorApp:
             self.buffer.move_home()
         elif key in ("$", curses.KEY_END, "KEY_END"):
             self.buffer.move_end()
+        elif key == "G":
+            self._move_file_end()
+        elif key in (CTRL_D, "\x04"):
+            self._move_half_page(1)
+        elif key in (CTRL_U, "\x15"):
+            self._move_half_page(-1)
         elif key == "x":
             self._record_edit()
             self.buffer.delete()
@@ -662,11 +683,34 @@ class EditorApp:
             else:
                 self._save()
         elif key in (CTRL_Q, "\x11") or is_function_key(key, 10):
-            if self.buffer.dirty:
-                self.status = "E37: No write since last change (:q! overrides)"
-                return False
-            return True
+            return self._request_quit(force=False)
         return False
+
+    def _move_file_start(self) -> None:
+        self.buffer.cursor_row = 0
+        self.buffer.cursor_col = 0
+        self.row_offset = 0
+        self.col_offset = 0
+
+    def _move_file_end(self) -> None:
+        self.buffer.cursor_row = max(0, len(self.buffer.lines) - 1)
+        self.buffer.cursor_col = min(self.buffer.cursor_col, len(self.buffer.current_line()))
+
+    def _move_half_page(self, direction: int) -> None:
+        visible_rows = self._visible_editor_rows()
+        step = max(1, visible_rows // 2)
+        target = self.buffer.cursor_row + (step if direction > 0 else -step)
+        self.buffer.cursor_row = max(0, min(len(self.buffer.lines) - 1, target))
+        self.buffer.cursor_col = min(self.buffer.cursor_col, len(self.buffer.current_line()))
+
+    def _visible_editor_rows(self) -> int:
+        if self.stdscr is not None and hasattr(self.stdscr, "getmaxyx"):
+            try:
+                height, _ = self.stdscr.getmaxyx()
+                return max(1, height - 2)
+            except Exception:
+                pass
+        return 10
 
     def _handle_list_key(self, key) -> bool:
         if key in (ESCAPE, "\x1b", "q"):
@@ -886,6 +930,11 @@ class EditorApp:
         return False
 
     def _execute_command(self, command: str) -> bool:
+        normalized_command = command.strip()
+        if normalized_command.startswith(":"):
+            normalized_command = normalized_command[1:].strip()
+        if normalized_command in ("q", "quit"):
+            return self._request_quit(force=False)
         if self._execute_extended_command(command):
             return False
         result = self.commands.execute(command, self.buffer.dirty)
@@ -894,7 +943,7 @@ class EditorApp:
         if result.message:
             self.status = result.message if not result.save else self.status
         if result.quit:
-            return True
+            return self._request_quit(force=result.force)
         return False
 
     def _execute_extended_command(self, command: str) -> bool:
@@ -1163,6 +1212,37 @@ class EditorApp:
         self.mode = "LIST"
         self.status = "Buffers: Enter switch | :bn next | :bp previous | :bd delete"
 
+    def _dirty_buffer_indexes(self) -> list[int]:
+        self._sync_current_buffer_state()
+        return [index for index, item in enumerate(self.buffers) if item.buffer.dirty]
+
+    def _request_quit(self, force: bool = False) -> bool:
+        if force:
+            return True
+        if self._dirty_buffer_indexes():
+            self._show_unsaved_buffers()
+            return False
+        return True
+
+    def _show_unsaved_buffers(self) -> None:
+        dirty_indexes = self._dirty_buffer_indexes()
+        self.list_title = "Unsaved Buffers"
+        self.list_lines = []
+        self.list_actions = []
+        for index in dirty_indexes:
+            item = self.buffers[index]
+            current = "%" if index == self.current_buffer_index else " "
+            label = self._current_buffer_label(item)
+            self.list_lines.append(f"{index + 1:>2} {current}+ {label}")
+            self.list_actions.append(lambda buffer_index=index: self._open_buffer_from_list(buffer_index))
+        if not self.list_lines:
+            self.list_lines = ["No unsaved buffers"]
+        self.list_kind = "unsaved-buffers"
+        self.list_cursor = 0
+        self.list_row_offset = 0
+        self.mode = "LIST"
+        self.status = "Unsaved Buffers: Enter switch | :w save | :q! force quit"
+
     def _open_buffer_from_list(self, index: int) -> None:
         self._sync_current_buffer_state()
         self._activate_buffer(index)
@@ -1188,11 +1268,13 @@ class EditorApp:
         if not result.command:
             self.status = "No build command"
             return
+        start = time.perf_counter()
         completed = self.build_runner(result.command, project_root)
+        elapsed = time.perf_counter() - start
         output = (completed.stdout or "") + (completed.stderr or "")
         self.last_build_command = result.command
         self.last_run_command = self.config.run_command.strip() or result.run_command
-        self._set_build_output(output, completed.returncode)
+        self._set_build_output(output, completed.returncode, elapsed)
         self._reload_project_files()
         if completed.returncode != 0:
             status = self.status
@@ -1207,10 +1289,15 @@ class EditorApp:
             self.status = "No run command"
             return
         project_root = self.project_root or (self.path.parent if self.path else Path.cwd())
+        start = time.perf_counter()
         completed = self.build_runner(command, project_root)
+        elapsed = time.perf_counter() - start
         output = (completed.stdout or "") + (completed.stderr or "")
         self.last_run_command = command
-        self.status = f"Run OK: {command}" if completed.returncode == 0 else f"Run failed ({completed.returncode}): {command}"
+        if completed.returncode == 0:
+            self.status = f"Run OK in {elapsed:.2f}s: {command}"
+        else:
+            self.status = f"Run failed ({completed.returncode}) in {elapsed:.2f}s: {command}"
         if output:
             self.build_output = output
             self._show_run_output(output)
@@ -1228,13 +1315,14 @@ class EditorApp:
         status = f"Shell OK: {command}" if completed.returncode == 0 else f"Shell failed ({completed.returncode}): {command}"
         self._show_command_output("Shell Output", output, status, "shell-output")
 
-    def _set_build_output(self, output: str, returncode: int) -> None:
+    def _set_build_output(self, output: str, returncode: int, elapsed: float | None = None) -> None:
         self.build_output = output
         self.build_diagnostics = BuildOutputParser().parse(output)
+        elapsed_text = "" if elapsed is None else f" in {elapsed:.2f}s"
         if returncode == 0:
-            self.status = f"Build OK: {len(self.build_diagnostics)} diagnostics"
+            self.status = f"Build OK{elapsed_text}: {len(self.build_diagnostics)} diagnostics"
         else:
-            self.status = f"Build failed ({returncode}): {len(self.build_diagnostics)} diagnostics"
+            self.status = f"Build failed ({returncode}){elapsed_text}: {len(self.build_diagnostics)} diagnostics"
 
     def _show_run_output(self, output: str) -> None:
         status = f"{self.status} | r rerun | q close"
@@ -1775,16 +1863,29 @@ class EditorApp:
 
     def _draw_status(self, height: int, width: int) -> None:
         name = str(self.path) if self.path else "[No Name]"
-        dirty = " +" if self.buffer.dirty else ""
+        markers = []
+        if self.buffer.dirty:
+            markers.append("DIRTY")
+        if self._is_read_only_path(self.path):
+            markers.append("RO")
+        marker_text = f" [{' '.join(markers)}]" if markers else ""
         mode = "TREE" if self.tree_visible and self.tree_focused else self.mode
         buffer_position = f"Buf {self.current_buffer_index + 1}/{len(self.buffers)}"
-        left = f" {mode} | {name}{dirty} | {buffer_position} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
+        left = f" {mode} | {name}{marker_text} | {buffer_position} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
         self._safe_addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line
         else:
             bottom = self._signature_help_text() or self.status
         self._safe_addnstr(height - 1, 0, bottom.ljust(width), width - 1)
+
+    def _is_read_only_path(self, path: Path | None) -> bool:
+        if path is None or not path.exists():
+            return False
+        try:
+            return not os.access(path, os.W_OK)
+        except OSError:
+            return False
 
     def _signature_help_text(self) -> str:
         if self.mode != "INSERT" or not self.config.signature_help:
