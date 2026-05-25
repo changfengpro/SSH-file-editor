@@ -743,6 +743,83 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(after_down, 5)
         self.assertEqual(app.buffer.cursor_row, 0)
 
+    def test_normal_mode_dd_deletes_current_line_and_undo_restores_it(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two", "three"]
+        app.buffer.cursor_row = 1
+        app.buffer.cursor_col = 2
+
+        app._handle_normal_key("d")
+        app._handle_normal_key("d")
+
+        self.assertEqual(app.buffer.lines, ["one", "three"])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
+
+        app._handle_normal_key("u")
+
+        self.assertEqual(app.buffer.lines, ["one", "two", "three"])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 2))
+
+    def test_normal_mode_yy_and_p_paste_line_below(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["one", "two"]
+        app.buffer.cursor_row = 0
+
+        app._handle_normal_key("y")
+        app._handle_normal_key("y")
+        app._handle_normal_key("p")
+
+        self.assertEqual(app.buffer.lines, ["one", "one", "two"])
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
+
+    def test_normal_mode_dw_deletes_word_and_undo_restores_it(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["alpha beta gamma"]
+        app.buffer.cursor_col = 6
+
+        app._handle_normal_key("d")
+        app._handle_normal_key("w")
+
+        self.assertEqual(app.buffer.lines, ["alpha gamma"])
+        self.assertEqual(app.buffer.cursor_col, 6)
+
+        app._handle_normal_key("u")
+
+        self.assertEqual(app.buffer.lines, ["alpha beta gamma"])
+        self.assertEqual(app.buffer.cursor_col, 6)
+
+    def test_normal_mode_cw_deletes_word_and_enters_insert(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["alpha beta gamma"]
+        app.buffer.cursor_col = 6
+
+        app._handle_normal_key("c")
+        app._handle_normal_key("w")
+
+        self.assertEqual(app.buffer.lines, ["alpha gamma"])
+        self.assertEqual(app.buffer.cursor_col, 6)
+        self.assertEqual(app.mode, "INSERT")
+
+    def test_normal_mode_ctrl_f_and_ctrl_b_move_full_page(self):
+        screen = SizedDrawScreen(height=12, width=80)
+        app = EditorApp(stdscr=screen, path=None)
+        app.buffer.lines = [f"line {index}" for index in range(40)]
+
+        app._handle_normal_key("\x06")
+        after_down = app.buffer.cursor_row
+        app._handle_normal_key("\x02")
+
+        self.assertEqual(after_down, 10)
+        self.assertEqual(app.buffer.cursor_row, 0)
+
+    def test_slash_still_searches_after_ctrl_f_becomes_page_down(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["alpha", "beta target"]
+
+        app._search_for("target")
+
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 5))
+
     def test_normal_mode_repeat_search_without_query_updates_status(self):
         app = EditorApp(stdscr=None, path=None)
 
@@ -767,6 +844,56 @@ class EditorNormalModeTests(unittest.TestCase):
 
         self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, 0))
         self.assertIn("line 2", app.status)
+
+    def test_command_substitute_replaces_all_matches_and_undo_restores(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["old one", "old old two"]
+
+        app._execute_command("%s/old/new/g")
+
+        self.assertEqual(app.buffer.lines, ["new one", "new new two"])
+        self.assertIn("3 substitutions", app.status)
+
+        app._handle_normal_key("u")
+
+        self.assertEqual(app.buffer.lines, ["old one", "old old two"])
+
+    def test_command_wqa_saves_all_dirty_named_buffers_and_quits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "one.c"
+            second = root / "two.c"
+            first.write_text("int one;\n", encoding="utf-8")
+            second.write_text("int two;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(first))
+            app.mode = "INSERT"
+            app._handle_insert_key("x")
+            app.mode = "NORMAL"
+            app._execute_command(f"e {second}")
+            app.mode = "INSERT"
+            app._handle_insert_key("y")
+            app.mode = "NORMAL"
+
+            should_quit = app._execute_command("wqa")
+
+            first_text = first.read_text(encoding="utf-8")
+            second_text = second.read_text(encoding="utf-8")
+
+        self.assertTrue(should_quit)
+        self.assertIn("xint one;", first_text)
+        self.assertIn("yint two;", second_text)
+
+    def test_command_wqa_refuses_dirty_no_name_buffer(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["changed"]
+        app.buffer.dirty = True
+
+        should_quit = app._execute_command("wqa")
+
+        self.assertFalse(should_quit)
+        self.assertEqual(app.mode, "LIST")
+        self.assertEqual(app.list_title, "Unsaved Buffers")
+        self.assertIn("[No Name]", "\n".join(app.list_lines))
 
     def test_command_pwd_reports_project_root(self):
         with tempfile.TemporaryDirectory() as tmp:

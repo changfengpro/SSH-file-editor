@@ -185,6 +185,57 @@ class TextBuffer:
             del self.lines[self.cursor_row + 1]
             self.dirty = True
 
+    def delete_current_line(self) -> str:
+        deleted = self.current_line()
+        if len(self.lines) == 1:
+            self.lines = [""]
+            self.cursor_row = 0
+        else:
+            del self.lines[self.cursor_row]
+            self.cursor_row = min(self.cursor_row, len(self.lines) - 1)
+        self.cursor_col = 0
+        self.dirty = True
+        return deleted
+
+    def insert_line_below(self, text: str) -> None:
+        insert_at = min(self.cursor_row + 1, len(self.lines))
+        self.lines.insert(insert_at, text)
+        self.cursor_row = insert_at
+        self.cursor_col = 0
+        self.dirty = True
+
+    def delete_word_forward(self) -> str:
+        line = self.current_line()
+        start = self.cursor_col
+        if start >= len(line):
+            return ""
+        end = start
+        while end < len(line) and line[end].isspace():
+            end += 1
+        if end < len(line) and re.match(r"[A-Za-z0-9_]", line[end]):
+            while end < len(line) and re.match(r"[A-Za-z0-9_]", line[end]):
+                end += 1
+        elif end < len(line):
+            end += 1
+        while end < len(line) and line[end].isspace():
+            end += 1
+        deleted = line[start:end]
+        if deleted:
+            self.lines[self.cursor_row] = line[:start] + line[end:]
+            self.cursor_col = min(start, len(self.current_line()))
+            self.dirty = True
+        return deleted
+
+    def replace_all(self, old: str, new: str) -> int:
+        if old == "":
+            return 0
+        count = sum(line.count(old) for line in self.lines)
+        if count:
+            self.lines = [line.replace(old, new) for line in self.lines]
+            self.cursor_col = min(self.cursor_col, len(self.current_line()))
+            self.dirty = True
+        return count
+
     def current_prefix(self) -> str:
         line = self.current_line()
         start = self.cursor_col

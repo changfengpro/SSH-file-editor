@@ -51,6 +51,7 @@ CTRL_P = 16
 CTRL_W = 23
 CTRL_D = 4
 CTRL_U = 21
+CTRL_B = 2
 CTRL_SPACE = 0
 TAB = 9
 ESCAPE = 27
@@ -330,6 +331,8 @@ class EditorApp:
         self.completion_index = 0
         self.quit_warning = False
         self.pending_normal_key = ""
+        self.pending_operator = ""
+        self.line_clipboard = ""
         self.last_search_query = ""
         self.list_title = ""
         self.list_lines: list[str] = []
@@ -588,6 +591,15 @@ class EditorApp:
         self.completions = []
         if self._run_keybinding(key):
             self.pending_normal_key = ""
+            self.pending_operator = ""
+            return False
+        if self.pending_operator:
+            operator = self.pending_operator
+            self.pending_operator = ""
+            return self._handle_operator_key(operator, key)
+        if key in ("d", "y", "c"):
+            self.pending_normal_key = ""
+            self.pending_operator = key
             return False
         if self.pending_normal_key == "g":
             self.pending_normal_key = ""
@@ -657,6 +669,8 @@ class EditorApp:
         elif key == "x":
             self._record_edit()
             self.buffer.delete()
+        elif key == "p":
+            self._paste_line_below()
         elif key == "u":
             if self.undo.undo(self.buffer):
                 self.status = "Undo"
@@ -673,7 +687,11 @@ class EditorApp:
             self._repeat_search(-1)
         elif key in (CTRL_N, "\x0e"):
             self._goto_next_diagnostic(1)
-        elif key in (CTRL_F, "\x06", "/"):
+        elif key in (CTRL_F, "\x06"):
+            self._move_full_page(1)
+        elif key in (CTRL_B, "\x02"):
+            self._move_full_page(-1)
+        elif key == "/":
             self._search()
         elif key == "\x1d":
             self._jump_to_definition()
@@ -685,6 +703,47 @@ class EditorApp:
         elif key in (CTRL_Q, "\x11") or is_function_key(key, 10):
             return self._request_quit(force=False)
         return False
+
+    def _handle_operator_key(self, operator: str, key) -> bool:
+        if operator == "d" and key == "d":
+            self._delete_current_line()
+            return False
+        if operator == "d" and key == "w":
+            self._delete_word_forward()
+            return False
+        if operator == "y" and key == "y":
+            self.line_clipboard = self.buffer.current_line()
+            self.status = "Yanked line"
+            return False
+        if operator == "c" and key == "w":
+            self._delete_word_forward()
+            self.mode = "INSERT"
+            return False
+        return False
+
+    def _delete_current_line(self) -> None:
+        self._record_edit()
+        self.line_clipboard = self.buffer.delete_current_line()
+        self._refresh_diagnostics()
+        self.status = "Deleted line"
+
+    def _delete_word_forward(self) -> None:
+        self._record_edit()
+        deleted = self.buffer.delete_word_forward()
+        if deleted:
+            self._refresh_diagnostics()
+            self.status = "Deleted word"
+        else:
+            self.status = "No word to delete"
+
+    def _paste_line_below(self) -> None:
+        if not self.line_clipboard:
+            self.status = "No line yanked"
+            return
+        self._record_edit()
+        self.buffer.insert_line_below(self.line_clipboard)
+        self._refresh_diagnostics()
+        self.status = "Pasted line"
 
     def _move_file_start(self) -> None:
         self.buffer.cursor_row = 0
@@ -699,6 +758,12 @@ class EditorApp:
     def _move_half_page(self, direction: int) -> None:
         visible_rows = self._visible_editor_rows()
         step = max(1, visible_rows // 2)
+        target = self.buffer.cursor_row + (step if direction > 0 else -step)
+        self.buffer.cursor_row = max(0, min(len(self.buffer.lines) - 1, target))
+        self.buffer.cursor_col = min(self.buffer.cursor_col, len(self.buffer.current_line()))
+
+    def _move_full_page(self, direction: int) -> None:
+        step = max(1, self._visible_editor_rows())
         target = self.buffer.cursor_row + (step if direction > 0 else -step)
         self.buffer.cursor_row = max(0, min(len(self.buffer.lines) - 1, target))
         self.buffer.cursor_col = min(self.buffer.cursor_col, len(self.buffer.current_line()))
@@ -935,6 +1000,8 @@ class EditorApp:
             normalized_command = normalized_command[1:].strip()
         if normalized_command in ("q", "quit"):
             return self._request_quit(force=False)
+        if normalized_command in ("wqa", "xa"):
+            return self._write_all_and_quit()
         if self._execute_extended_command(command):
             return False
         result = self.commands.execute(command, self.buffer.dirty)
@@ -952,6 +1019,9 @@ class EditorApp:
             command = command[1:].strip()
         if not command:
             return False
+        if command.startswith("%s/"):
+            self._command_substitute(command)
+            return True
         if command.isdigit():
             return self._command_goto(command)
         if command.startswith("!"):
@@ -1036,6 +1106,21 @@ class EditorApp:
     def _command_pwd(self) -> None:
         path = self.project_root or (self.path.parent if self.path else Path.cwd())
         self.status = str(path)
+
+    def _command_substitute(self, command: str) -> None:
+        parts = command.split("/")
+        if len(parts) < 4 or parts[0] != "%s":
+            self.status = f"E475: Invalid substitute: {command}"
+            return
+        old, new, flags = parts[1], parts[2], parts[3]
+        if flags not in ("", "g"):
+            self.status = f"E475: Invalid substitute flags: {flags}"
+            return
+        self._record_edit()
+        count = self.buffer.replace_all(old, new)
+        if count:
+            self._refresh_diagnostics()
+        self.status = f"{count} substitutions"
 
     def _toggle_project_tree(self, action: str = "") -> None:
         action = action.lower()
@@ -1242,6 +1327,21 @@ class EditorApp:
         self.list_row_offset = 0
         self.mode = "LIST"
         self.status = "Unsaved Buffers: Enter switch | :w save | :q! force quit"
+
+    def _write_all_and_quit(self) -> bool:
+        self._sync_current_buffer_state()
+        unsaved_no_name = [index for index, item in enumerate(self.buffers) if item.buffer.dirty and item.path is None]
+        if unsaved_no_name:
+            self._show_unsaved_buffers()
+            self.status = "E32: No file name for unsaved buffer"
+            return False
+        for index, item in enumerate(list(self.buffers)):
+            if not item.buffer.dirty:
+                continue
+            self._activate_buffer(index)
+            self._save(item.path)
+        self.status = "Saved all buffers"
+        return True
 
     def _open_buffer_from_list(self, index: int) -> None:
         self._sync_current_buffer_state()

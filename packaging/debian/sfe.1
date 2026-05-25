@@ -74,6 +74,10 @@ Version 0.5.7 adds gg, G, Ctrl-D, and Ctrl-U movement, shows an Unsaved Buffers
 list when :q or quit shortcuts find modified buffers, marks DIRTY and RO files
 in the status line, and reports elapsed time for :make and :run.
 .PP
+Version 0.6.0 adds dd, yy, p, dw, cw, Ctrl-F, and Ctrl-B editing/navigation,
+plus :%s/old/new/g substitution and :wqa save-all quit. Ctrl-F now scrolls down
+a full screen; use / for search.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -107,6 +111,10 @@ Quit without saving changes.
 .B :wq
 Save and quit.
 .TP
+.B :wqa
+Save all named modified buffers and quit. If a modified [No Name] buffer exists,
+show Unsaved Buffers and do not exit.
+.TP
 .B u
 Undo the last edit in Normal mode.
 .TP
@@ -127,6 +135,24 @@ Jump to the end of the file.
 .TP
 .B Ctrl-D, Ctrl-U
 Move down or up by half a screen.
+.TP
+.B Ctrl-F, Ctrl-B
+Move down or up by a full screen.
+.TP
+.B dd
+Delete the current line and copy it to the line clipboard.
+.TP
+.B yy
+Copy the current line to the line clipboard.
+.TP
+.B p
+Paste the copied/deleted line below the current line.
+.TP
+.B dw
+Delete forward to the next word boundary.
+.TP
+.B cw
+Delete forward to the next word boundary and enter Insert mode.
 .TP
 .B Ctrl-]
 Jump to the definition of the symbol under the cursor.
@@ -219,6 +245,9 @@ Show the current project root or working directory in the status line.
 .TP
 .B :!cmd
 Run cmd in the project root and show stdout and stderr in a list.
+.TP
+.B :%s/old/new/g
+Replace all literal matches of old with new in the current buffer.
 .TP
 .B :symbols
 Show symbols found in the current file.
