@@ -585,6 +585,16 @@ class EditorLayoutTests(unittest.TestCase):
         status_rows = [call[2] for call in screen.calls]
         self.assertTrue(any("RO" in row for row in status_rows))
 
+    def test_status_line_includes_fast_git_branch(self):
+        screen = FakeDrawScreen()
+        app = EditorApp(stdscr=screen, path=None)
+        app.git_branch = "main"
+
+        app._draw_status(10, 120)
+
+        status_rows = [call[2] for call in screen.calls]
+        self.assertTrue(any("git:main" in row for row in status_rows))
+
     def test_auto_pair_placeholder_draws_dimmed_closer(self):
         screen = FakeDrawScreen()
         app = EditorApp(stdscr=screen, path=None)
@@ -1535,6 +1545,67 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(app.buffer.lines[0], "int src;")
         self.assertEqual(app.mode, "NORMAL")
 
+    def test_file_picker_filters_with_typing_backspace_enter_and_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            current = root / "main.c"
+            target = root / "src" / "alpha.c"
+            other = root / "tests" / "beta.c"
+            target.parent.mkdir()
+            other.parent.mkdir()
+            current.write_text("int main;\n", encoding="utf-8")
+            target.write_text("int alpha;\n", encoding="utf-8")
+            other.write_text("int beta;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(current))
+
+            app._execute_command("files")
+            app._handle_list_key("a")
+            filtered_once = list(app.list_lines)
+            app._handle_list_key("l")
+            filtered_twice = list(app.list_lines)
+            app._handle_list_key("\b")
+            after_backspace = list(app.list_lines)
+            app._handle_list_key("\n")
+
+        self.assertEqual(app.path, target)
+        self.assertEqual(app.file_filter, "")
+        self.assertIn("src/alpha.c", filtered_once)
+        self.assertIn("src/alpha.c", filtered_twice)
+        self.assertNotIn("tests/beta.c", filtered_twice)
+        self.assertGreaterEqual(len(after_backspace), len(filtered_twice))
+        self.assertEqual(app.mode, "NORMAL")
+
+    def test_file_picker_escape_closes_and_clears_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            source.write_text("int main;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._execute_command("files")
+            app._handle_list_key("m")
+            app._handle_list_key("\x1b")
+
+        self.assertEqual(app.mode, "NORMAL")
+        self.assertEqual(app.file_filter, "")
+
+    def test_file_picker_status_shows_filter_and_match_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            (root / "alpha.c").write_text("int alpha;\n", encoding="utf-8")
+            source.write_text("int main;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._execute_command("files")
+            app._handle_list_key("a")
+
+        self.assertIn("filter: a", app.status)
+        self.assertIn("matches:", app.status)
+
     def test_files_command_rejects_binary_file_and_keeps_current_buffer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1567,6 +1638,96 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(app.mode, "LIST")
         self.assertEqual(app.list_title, "Files")
         self.assertIn("main.c", app.list_lines)
+
+    def test_project_files_scan_is_reused_by_files_tree_and_open_until_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            target = root / "src.c"
+            source.write_text("int main;\n", encoding="utf-8")
+            target.write_text("int src;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            calls = []
+
+            def scanner(path):
+                calls.append(path)
+                return sfe.ProjectFileScanner().scan(path)
+
+            app.project_file_scanner = scanner
+
+            app._execute_command("files")
+            app._execute_command("tree")
+            app._execute_command("open src")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(app.path, target)
+
+    def test_make_refreshes_tree_with_single_project_file_rescan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n\tcc main.c -o test\n", encoding="utf-8")
+            source = root / "main.c"
+            binary = root / "test"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source), config=EditorConfig(build_command="make"))
+            calls = []
+
+            def scanner(path):
+                calls.append(path)
+                return sfe.ProjectFileScanner().scan(path)
+
+            app.project_file_scanner = scanner
+            app._execute_command("tree")
+            calls.clear()
+
+            def runner(command, cwd):
+                binary.write_bytes(b"\x7fELF\x00binary")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            app.build_runner = runner
+            app._execute_command("make")
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("test", [entry.relative_path for entry in app.tree_entries])
+
+    def test_tree_quick_locate_selects_visible_item_without_changing_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            source = root / "main.c"
+            (root / "src" / "alpha.c").write_text("int alpha;\n", encoding="utf-8")
+            (root / "tests" / "beta.c").write_text("int beta;\n", encoding="utf-8")
+            source.write_text("int main;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+
+            app._execute_command("tree")
+            app.tree_cursor = 0
+            before_expanded = set(app.tree_expanded)
+            app._handle_tree_key("t")
+
+        selected = app.tree_entries[app.tree_cursor]
+        self.assertEqual(selected.relative_path, "tests")
+        self.assertEqual(app.tree_expanded, before_expanded)
+
+    def test_tree_refresh_preserves_selected_path_after_rescan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Makefile").write_text("all:\n", encoding="utf-8")
+            source = root / "main.c"
+            target = root / "src.c"
+            source.write_text("int main;\n", encoding="utf-8")
+            target.write_text("int src;\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(source))
+            app._execute_command("tree")
+            app.tree_cursor = [entry.relative_path for entry in app.tree_entries].index("src.c")
+            (root / "new.c").write_text("int new;\n", encoding="utf-8")
+
+            app._reload_project_files()
+
+        self.assertEqual(app.tree_entries[app.tree_cursor].relative_path, "src.c")
 
     def test_list_cursor_moves_with_j_and_k(self):
         app = EditorApp(stdscr=None, path=None)

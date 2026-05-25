@@ -229,6 +229,11 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("--clobber", workflow)
         self.assertNotIn("if: steps.existing.outputs.exists == 'false'", workflow)
 
+    def test_release_job_only_publishes_for_tag_pushes_to_avoid_race(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", workflow)
+
     def test_release_workflow_checks_glibc_compatibility(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 

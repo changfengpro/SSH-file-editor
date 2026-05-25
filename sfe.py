@@ -309,12 +309,14 @@ class EditorApp:
         ]
         self.current_buffer_index = 0
         self.project_root = self._find_project_root()
+        self.project_file_scanner = lambda root: ProjectFileScanner().scan(root)
         self.header_index = HeaderIndex(set(), [])
         self.project_index: ProjectIndex | None = None
         self.project_files: ProjectFiles | None = None
         self.header_index_loaded = False
         self.project_index_loaded = False
         self.project_files_loaded = False
+        self.git_branch = self._load_git_branch_fast()
         self.build_diagnostics: list[BuildDiagnostic] = []
         self.build_output = ""
         self.last_build_command = ""
@@ -341,6 +343,8 @@ class EditorApp:
         self.list_row_offset = 0
         self.list_actions: list[object] = []
         self.list_kind = ""
+        self.file_filter = ""
+        self.file_picker_all_files = []
         self.jump_stack: list[tuple[Path | None, int, int]] = []
         self.tree_visible = False
         self.tree_focused = False
@@ -473,20 +477,40 @@ class EditorApp:
         start = self.path if self.path.exists() else self.path.parent
         return find_project_root(start, self.config.project_root_markers)
 
+    def _load_git_branch_fast(self) -> str:
+        root = self.project_root
+        if root is None:
+            return ""
+        git_path = root / ".git"
+        head_path = git_path / "HEAD"
+        try:
+            if git_path.is_file():
+                data = git_path.read_text(encoding="utf-8", errors="replace").strip()
+                if data.startswith("gitdir:"):
+                    head_path = (git_path.parent / data.split(":", 1)[1].strip() / "HEAD").resolve()
+            head = head_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        prefix = "ref: refs/heads/"
+        if head.startswith(prefix):
+            return head[len(prefix) :]
+        return head[:7] if head else ""
+
     def _load_project_files(self) -> ProjectFiles | None:
         if self.project_root is None:
             return None
-        return ProjectFileScanner().scan(self.project_root)
+        return self.project_file_scanner(self.project_root)
 
-    def _invalidate_file_context_indexes(self) -> None:
+    def _invalidate_file_context_indexes(self, reset_project: bool = True) -> None:
         self.header_index = HeaderIndex(set(), [])
-        self.project_index = None
-        self.project_files = None
         self.header_index_loaded = False
-        self.project_index_loaded = False
-        self.project_files_loaded = False
         self.signature_help = SignatureHelpEngine.from_header_index(None)
-        self.tree_entries = []
+        if reset_project:
+            self.project_index = None
+            self.project_files = None
+            self.project_index_loaded = False
+            self.project_files_loaded = False
+            self.tree_entries = []
 
     def _ensure_header_index(self) -> HeaderIndex:
         if not self.header_index_loaded:
@@ -508,15 +532,21 @@ class EditorApp:
         return self.project_files
 
     def _reload_project_files(self) -> None:
+        selected_path = None
+        if self.tree_entries and 0 <= self.tree_cursor < len(self.tree_entries):
+            selected_path = self.tree_entries[self.tree_cursor].relative_path
         self.project_files_loaded = False
         self.project_files = self._ensure_project_files()
         if self.tree_visible:
-            self._refresh_tree_entries()
+            self._refresh_tree_entries(selected_path)
 
     def _reload_file_context(self) -> None:
+        previous_project_root = self.project_root
         self.project_root = self._find_project_root()
+        project_changed = self._normalized_path(previous_project_root) != self._normalized_path(self.project_root)
+        self.git_branch = self._load_git_branch_fast()
         self.recent_store_path = self._default_recent_store_path()
-        self._invalidate_file_context_indexes()
+        self._invalidate_file_context_indexes(reset_project=project_changed)
         if self.tree_visible:
             self.project_files = self._ensure_project_files()
             self._refresh_tree_entries()
@@ -779,7 +809,12 @@ class EditorApp:
         return 10
 
     def _handle_list_key(self, key) -> bool:
-        if key in (ESCAPE, "\x1b", "q"):
+        if key in (ESCAPE, "\x1b"):
+            if self.list_kind == "files":
+                self._clear_file_picker()
+            self.mode = "NORMAL"
+            return False
+        if key == "q" and self.list_kind != "files":
             self.mode = "NORMAL"
             return False
         if key == "r" and self.list_kind == "run-output":
@@ -794,6 +829,15 @@ class EditorApp:
         if key in ("\n", "\r"):
             self._open_selected_list_item()
             return False
+        if self.list_kind == "files":
+            if key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                self.file_filter = self.file_filter[:-1]
+                self._refresh_file_picker()
+                return False
+            if isinstance(key, str) and len(key) == 1 and key >= " ":
+                self.file_filter += key
+                self._refresh_file_picker()
+                return False
         return False
 
     def _move_list_cursor(self, delta: int) -> None:
@@ -805,6 +849,8 @@ class EditorApp:
     def _open_selected_list_item(self) -> None:
         if not self.list_actions or not (0 <= self.list_cursor < len(self.list_actions)):
             self.mode = "NORMAL"
+            if self.list_kind == "files":
+                self._clear_file_picker()
             return
         action = self.list_actions[self.list_cursor]
         if callable(action):
@@ -887,6 +933,9 @@ class EditorApp:
             return False
         if key in ("\n", "\r"):
             self._activate_tree_entry()
+            return False
+        if isinstance(key, str) and len(key) == 1 and key >= " ":
+            self._quick_locate_tree_entry(key)
             return False
         return False
 
@@ -1209,6 +1258,20 @@ class EditorApp:
             return
         self.tree_cursor = max(0, min(len(self.tree_entries) - 1, self.tree_cursor + delta))
 
+    def _quick_locate_tree_entry(self, char: str) -> None:
+        if not self.tree_entries:
+            return
+        needle = char.lower()
+        start = self.tree_cursor + 1
+        for offset in range(len(self.tree_entries)):
+            index = (start + offset) % len(self.tree_entries)
+            entry = self.tree_entries[index]
+            name = entry.relative_path.rstrip("/").rsplit("/", 1)[-1].lower()
+            if name.startswith(needle):
+                self.tree_cursor = index
+                self.status = f"Tree: {entry.relative_path}"
+                return
+
     def _activate_tree_entry(self) -> None:
         if not self.tree_entries or not (0 <= self.tree_cursor < len(self.tree_entries)):
             self.status = "Project tree: no item selected"
@@ -1273,18 +1336,33 @@ class EditorApp:
         if not self.project_files:
             self.status = "No project root"
             return
-        files = sorted(self.project_files.files, key=lambda item: item.relative_path)
+        self.file_picker_all_files = sorted(self.project_files.files, key=lambda item: item.relative_path)
+        self.file_filter = ""
         self.list_title = "Files"
-        self.list_lines = [item.relative_path for item in files] or ["No project files"]
         self.list_kind = "files"
-        self.list_actions = [lambda path=item.path: self._open_file_from_list(path) for item in files]
         self.list_cursor = 0
         self.list_row_offset = 0
         self.mode = "LIST"
-        self.status = "Files: Enter open | j/k move | q close"
+        self._refresh_file_picker()
+
+    def _refresh_file_picker(self) -> None:
+        files = fuzzy_match_files(self.file_filter, self.file_picker_all_files, limit=len(self.file_picker_all_files))
+        self.list_title = "Files"
+        self.list_kind = "files"
+        self.list_lines = [item.relative_path for item in files] or ["No matching files"]
+        self.list_actions = [lambda path=item.path: self._open_file_from_list(path) for item in files]
+        self.list_cursor = min(self.list_cursor, max(0, len(self.list_actions) - 1))
+        self.list_row_offset = min(self.list_row_offset, self.list_cursor)
+        filter_text = self.file_filter or "<none>"
+        self.status = f"Files: filter: {filter_text} | matches: {len(files)} | Enter open | Esc close"
+
+    def _clear_file_picker(self) -> None:
+        self.file_filter = ""
+        self.file_picker_all_files = []
 
     def _open_file_from_list(self, path: Path) -> None:
         self._open_file(path)
+        self._clear_file_picker()
         self.mode = "NORMAL"
 
     def _show_buffers(self) -> None:
@@ -1470,7 +1548,8 @@ class EditorApp:
             ":e file open/switch | :open fuzzy | :files quick open | Ctrl-P files",
             ":buffers list | :bn/:bp next/previous | :bd delete clean buffer",
             ":bind bn map shortcut | :tree toggle | :tree open/close | :recent",
-            "Tree: Ctrl-W open/switch | j/k move | Enter open/toggle dir | q close",
+            "Files: type filter | Backspace edit | Enter open | Esc close",
+            "Tree: Ctrl-W switch | j/k move | char locate | Enter open/toggle | q close",
             ":goto line | :42 line jump | :pwd | :!cmd shell | :symbols | :diag",
             ":make build | :run last output | :errors | :set key value | :help",
             "Tab accept completion | Ctrl-Space manual completion | Ctrl-] definition | Ctrl-O back",
@@ -2015,7 +2094,12 @@ class EditorApp:
         marker_text = f" [{' '.join(markers)}]" if markers else ""
         mode = "TREE" if self.tree_visible and self.tree_focused else self.mode
         buffer_position = f"Buf {self.current_buffer_index + 1}/{len(self.buffers)}"
-        left = f" {mode} | {name}{marker_text} | {buffer_position} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
+        branch = f" | git:{self.git_branch}" if self.git_branch else ""
+        picker = ""
+        if self.mode == "LIST" and self.list_kind == "files":
+            matches = len(self.list_actions)
+            picker = f" | filter:{self.file_filter or '<none>'} {matches}"
+        left = f" {mode} | {name}{marker_text} | {buffer_position} | {self.buffer.cursor_row + 1}:{self.buffer.cursor_col + 1}{branch}{picker} | sfe {read_version()} | Diagnostics: {len(self.diagnostics)} "
         self._safe_addnstr(height - 2, 0, left.ljust(width), width - 1, getattr(curses, "A_REVERSE", curses.A_NORMAL))
         if self.mode == "COMMAND":
             bottom = ":" + self.command_line

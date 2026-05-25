@@ -59,6 +59,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -93,9 +94,11 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Make Ctrl-] jump to local #include headers before normal symbol lookup.
-          - Add :outline as a jumpable current-file symbol list and keep :symbols compatible.
-          - Add conservative C diagnostics for duplicate locals, unused locals, orphan else, duplicate case, and duplicate default.
+          - Make :files and Ctrl-P open a filterable project file picker.
+          - Add quick character locate in the project tree and preserve selection across refreshes.
+          - Show the current git branch in the status bar when it can be read quickly.
+          - Reuse cached project file scans across files, tree, and fuzzy open.
+          - Restrict release publishing to tag pushes to avoid main/tag workflow races.
 
           ## Verification
           - python3 -m unittest discover -s tests

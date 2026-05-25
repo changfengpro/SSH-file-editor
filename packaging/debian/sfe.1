@@ -83,6 +83,11 @@ Version 0.7.0 makes Ctrl-] prefer include jumps on #include lines, adds
 adds conservative C diagnostics for duplicate local variables, obviously unused
 locals, orphan else, duplicate case labels, and duplicate default labels.
 .PP
+Version 0.8.0 makes :files and Ctrl-P filterable, adds quick character locate
+in the project tree, preserves tree selection across refreshes, shows fast git
+branch status when available, and reuses cached project file scans across the
+file picker, project tree, and fuzzy open.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -194,8 +199,8 @@ Close the project tree pane when it has focus.
 Fuzzy-open the best matching project file.
 .TP
 .B :files
-Show project files. Press Enter on a selected file to open or switch to its
-buffer.
+Show project files with a live filter. Type to filter, Backspace to edit the
+filter, Enter to open or switch to the selected buffer, and Esc to close.
 .TP
 .B :recent
 Show recently opened project files.
