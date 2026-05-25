@@ -34,6 +34,7 @@ from sfe_core import (
     build_project_tree_entries,
     find_project_root,
     fuzzy_match_files,
+    parse_include_directive,
 )
 
 try:
@@ -1035,8 +1036,8 @@ class EditorApp:
         if name == "pwd":
             self._command_pwd()
             return True
-        if name in ("symbols", "symbol"):
-            self._show_symbols()
+        if name in ("outline", "symbols", "symbol"):
+            self._show_outline(alias=name)
             return True
         if name in ("diag", "diagnostics"):
             self._show_diagnostics()
@@ -1135,18 +1136,26 @@ class EditorApp:
             return
         self._show_project_tree()
 
-    def _show_symbols(self) -> None:
-        index = ProjectScanner()._scan_file(self.path or Path("[buffer]"), self.buffer.lines)
-        self.list_title = "Symbols"
-        self.list_lines = [f"{symbol.row + 1}: {symbol.kind:<8} {symbol.name}" for symbol in index]
+    def _show_outline(self, alias: str = "outline") -> None:
+        symbols = ProjectScanner().outline(self.path or Path("[buffer]"), self.buffer.lines)
+        self.list_title = "Outline"
+        self.list_lines = [f"{symbol.row + 1}: {symbol.kind} {symbol.name}" for symbol in symbols]
+        self.list_actions = [lambda symbol=symbol: self._jump_to_symbol(symbol) for symbol in symbols]
         if not self.list_lines:
             self.list_lines = ["No symbols"]
-        self.list_kind = "symbols"
-        self.list_actions = []
+            self.list_actions = []
+        self.list_kind = "outline"
         self.list_cursor = 0
         self.list_row_offset = 0
         self.mode = "LIST"
-        self.status = "Symbols: " + " | ".join(self.list_lines[:3])
+        title = "Symbols" if alias in ("symbols", "symbol") else "Outline"
+        self.status = f"{title}: " + " | ".join(self.list_lines[:3])
+
+    def _jump_to_symbol(self, symbol) -> None:
+        self.buffer.cursor_row = min(symbol.row, len(self.buffer.lines) - 1)
+        self.buffer.cursor_col = min(symbol.col, len(self.buffer.current_line()))
+        self.mode = "NORMAL"
+        self.status = f"Outline: {symbol.name}"
 
     def _show_diagnostics(self) -> None:
         self._refresh_diagnostics()
@@ -1636,6 +1645,10 @@ class EditorApp:
         return line[start:end]
 
     def _jump_to_definition(self) -> bool:
+        if self._jump_to_include():
+            return True
+        if self.status.startswith("System include:") or self.status.startswith("Include not found:"):
+            return False
         word = self._current_word()
         if not word:
             self.status = "No symbol under cursor"
@@ -1657,6 +1670,37 @@ class EditorApp:
         self.buffer.cursor_row = min(symbol.row, len(self.buffer.lines) - 1)
         self.buffer.cursor_col = min(symbol.col, len(self.buffer.current_line()))
         self.status = f"Definition: {symbol.name}"
+        return True
+
+    def _jump_to_include(self) -> bool:
+        if self.buffer.cursor_row < 0 or self.buffer.cursor_row >= len(self.buffer.lines):
+            return False
+        directive = parse_include_directive(self.buffer.current_line(), self.buffer.cursor_col)
+        if directive is None:
+            return False
+        if directive.kind == "system":
+            self.status = f"System include: {directive.header}"
+            return False
+        project_index = self._ensure_project_index()
+        current_dir = self.path.parent if self.path else None
+        if project_index is not None:
+            target = project_index.find_include(directive.header, current_dir)
+        else:
+            target = (current_dir / directive.header) if current_dir is not None else None
+            if target is not None and not target.exists():
+                target = None
+        if target is None:
+            self.status = f"Include not found: {directive.header}"
+            return False
+        if self.buffer.dirty and target != self.path:
+            self.status = "Unsaved changes. Save before jumping to another file."
+            return False
+        self.jump_stack.append((self.path, self.buffer.cursor_row, self.buffer.cursor_col))
+        if self.path != target:
+            self._open_file(target)
+        self.buffer.cursor_row = 0
+        self.buffer.cursor_col = 0
+        self.status = f"Include: {directive.header}"
         return True
 
     def _jump_back(self) -> bool:

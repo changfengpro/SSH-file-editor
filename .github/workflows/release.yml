@@ -93,9 +93,9 @@ jobs:
         run: |
           cat > release-notes.md <<'EOF'
           ## Changes
-          - Add Vim-style dd, yy, p, dw, cw, Ctrl-F, and Ctrl-B editing/navigation.
-          - Add :%s/old/new/g full-buffer substitution and :wqa save-all quit.
-          - Move search to / only; Ctrl-F now scrolls down a full screen.
+          - Make Ctrl-] jump to local #include headers before normal symbol lookup.
+          - Add :outline as a jumpable current-file symbol list and keep :symbols compatible.
+          - Add conservative C diagnostics for duplicate locals, unused locals, orphan else, duplicate case, and duplicate default.
 
           ## Verification
           - python3 -m unittest discover -s tests
@@ -106,10 +106,21 @@ jobs:
               --title "${{ steps.version.outputs.tag }}" \
               --notes-file release-notes.md
           fi
-          gh release upload "${{ steps.version.outputs.tag }}" \
+          for asset in \
             "dist/sfe_${{ steps.version.outputs.version }}_amd64.deb" \
             "dist/sfe_${{ steps.version.outputs.version }}_arm64.deb" \
             "dist/sfe_latest_amd64.deb" \
             "dist/sfe_latest_arm64.deb" \
-            "dist/sfe_latest_all.deb" \
-            --clobber
+            "dist/sfe_latest_all.deb"
+          do
+            gh release upload "${{ steps.version.outputs.tag }}" "$asset" --clobber
+          done
+          for asset in \
+            "sfe_${{ steps.version.outputs.version }}_amd64.deb" \
+            "sfe_${{ steps.version.outputs.version }}_arm64.deb" \
+            "sfe_latest_amd64.deb" \
+            "sfe_latest_arm64.deb" \
+            "sfe_latest_all.deb"
+          do
+            gh release view "${{ steps.version.outputs.tag }}" --json assets --jq ".assets[].name" | grep -Fx "$asset"
+          done

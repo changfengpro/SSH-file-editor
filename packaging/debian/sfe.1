@@ -78,6 +78,11 @@ Version 0.6.0 adds dd, yy, p, dw, cw, Ctrl-F, and Ctrl-B editing/navigation,
 plus :%s/old/new/g substitution and :wqa save-all quit. Ctrl-F now scrolls down
 a full screen; use / for search.
 .PP
+Version 0.7.0 makes Ctrl-] prefer include jumps on #include lines, adds
+:outline as a jumpable current-file symbol list, keeps :symbols compatible, and
+adds conservative C diagnostics for duplicate local variables, obviously unused
+locals, orphan else, duplicate case labels, and duplicate default labels.
+.PP
 When auto pairing is enabled, typing {, (, [, " or ' inserts the matching
 right side as a dim placeholder. Pressing Enter between an automatic {} pair
 keeps the closing brace aligned with the opening brace, and typing the matching
@@ -155,7 +160,9 @@ Delete forward to the next word boundary.
 Delete forward to the next word boundary and enter Insert mode.
 .TP
 .B Ctrl-]
-Jump to the definition of the symbol under the cursor.
+Jump to the definition of the symbol under the cursor. On #include lines, jump
+to a local include when it can be found in the current directory or project root;
+system includes report the header name without opening a guessed path.
 .TP
 .B Ctrl-O
 Jump back after a definition jump.
@@ -249,8 +256,12 @@ Run cmd in the project root and show stdout and stderr in a list.
 .B :%s/old/new/g
 Replace all literal matches of old with new in the current buffer.
 .TP
+.B :outline
+Show current-file symbols by kind. Press Enter on a selected symbol to jump to
+that line.
+.TP
 .B :symbols
-Show symbols found in the current file.
+Alias for :outline.
 .TP
 .B :diag
 Show lightweight C diagnostics.

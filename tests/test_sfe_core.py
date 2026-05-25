@@ -10,6 +10,7 @@ from sfe_core import (
     CProjectSymbol,
     HeaderIndex,
     HeaderScanner,
+    IncludeDirective,
     ProjectFileScanner,
     ProjectTreeEntry,
     ProjectScanner,
@@ -22,6 +23,7 @@ from sfe_core import (
     build_project_tree_entries,
     find_project_root,
     fuzzy_match_files,
+    parse_include_directive,
 )
 
 
@@ -362,6 +364,14 @@ class CompletionEngineTests(unittest.TestCase):
 
 
 class ProjectScannerTests(unittest.TestCase):
+    def test_parse_include_directive_detects_local_and_system_headers(self):
+        local = parse_include_directive('#include "model.h"', 10)
+        system = parse_include_directive("#include <stdio.h>", 12)
+
+        self.assertEqual(local, IncludeDirective("model.h", "local"))
+        self.assertEqual(system, IncludeDirective("stdio.h", "system"))
+        self.assertIsNone(parse_include_directive("int include_count;", 4))
+
     def test_scans_c_project_symbols_recursively(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -400,6 +410,32 @@ class ProjectScannerTests(unittest.TestCase):
         self.assertEqual(symbols["add"].row, 2)
         self.assertEqual(symbols["add"].path.name, "main.c")
         self.assertEqual(symbols["total_count"].kind, "global")
+
+    def test_scans_outline_symbols_in_source_order(self):
+        lines = [
+            "#define LIMIT 8",
+            "typedef unsigned long count_t;",
+            "struct model {",
+            "    int id;",
+            "};",
+            "static int total_count;",
+            "int add(int left, int right) {",
+            "    return left + right;",
+            "}",
+        ]
+
+        symbols = ProjectScanner().outline(Path("main.c"), lines)
+
+        self.assertEqual(
+            [(symbol.kind, symbol.name, symbol.row) for symbol in symbols],
+            [
+                ("macro", "LIMIT", 0),
+                ("typedef", "count_t", 1),
+                ("struct", "model", 2),
+                ("global", "total_count", 5),
+                ("function", "add", 6),
+            ],
+        )
 
     def test_find_definition_prefers_exact_symbol_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -579,6 +615,41 @@ class CDiagnosticEngineTests(unittest.TestCase):
         self.assertIn("missing semicolon", messages)
         self.assertIn("unterminated string literal", messages)
         self.assertIn("unmatched {", messages)
+
+    def test_reports_conservative_c_semantic_diagnostics(self):
+        diagnostics = CDiagnosticEngine().analyze(
+            [
+                "int main(void) {",
+                "    int used = 1;",
+                "    int used = 2;",
+                "    int lonely;",
+                "    if (used) {",
+                "    }",
+                "    else {",
+                "    }",
+                "    else {",
+                "    }",
+                "    switch (used) {",
+                "    case 1:",
+                "        break;",
+                "    case 1:",
+                "        break;",
+                "    default:",
+                "        break;",
+                "    default:",
+                "        break;",
+                "    }",
+                "}",
+            ]
+        )
+
+        messages = [diagnostic.message for diagnostic in diagnostics]
+
+        self.assertIn("duplicate local variable: used", messages)
+        self.assertIn("unused local variable: lonely", messages)
+        self.assertIn("orphan else", messages)
+        self.assertIn("duplicate case label: 1", messages)
+        self.assertIn("duplicate default label in switch", messages)
 
 
 class HeaderScannerTests(unittest.TestCase):

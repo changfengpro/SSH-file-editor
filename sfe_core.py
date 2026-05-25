@@ -18,6 +18,12 @@ FUNCTION_DEF_RE = re.compile(
 GLOBAL_RE = re.compile(
     r"^\s*(?:static\s+|extern\s+|const\s+|volatile\s+)*[A-Za-z_][A-Za-z0-9_\s\*]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^;]+)?;"
 )
+LOCAL_DECL_RE = re.compile(
+    r"^\s*(?:const\s+|volatile\s+|static\s+|register\s+|unsigned\s+|signed\s+|long\s+|short\s+)*"
+    r"(?:void|char|int|float|double|size_t|ssize_t|bool|struct\s+[A-Za-z_][A-Za-z0-9_]*|enum\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*_t)\s+"
+    r"[*\s]*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^;]*)?;"
+)
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]')
 PAIRS = {"{": "}", "(": ")", "[": "]", '"': '"', "'": "'"}
 
 
@@ -508,6 +514,22 @@ class ProjectSymbol:
 
 
 @dataclass(frozen=True)
+class IncludeDirective:
+    header: str
+    kind: str
+
+
+def parse_include_directive(line: str, cursor_col: int | None = None) -> IncludeDirective | None:
+    match = INCLUDE_RE.match(line)
+    if not match:
+        return None
+    opener, header = match.groups()
+    if cursor_col is not None and cursor_col < match.start(2):
+        return None
+    return IncludeDirective(header, "local" if opener == '"' else "system")
+
+
+@dataclass(frozen=True)
 class ProjectIndex:
     root: Path
     symbols: list[ProjectSymbol]
@@ -516,6 +538,21 @@ class ProjectIndex:
         for symbol in self.symbols:
             if symbol.name == name:
                 return symbol
+        return None
+
+    def find_include(self, header: str, current_dir: Path | None = None) -> Path | None:
+        candidates: list[Path] = []
+        if current_dir is not None:
+            candidates.append(Path(current_dir) / header)
+        candidates.append(self.root / header)
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(self.root.resolve())
+            except (OSError, ValueError):
+                continue
+            if resolved.exists() and resolved.is_file():
+                return resolved
         return None
 
 
@@ -551,36 +588,51 @@ class ProjectScanner:
 
     def _scan_file(self, path: Path, lines: list[str]) -> list[ProjectSymbol]:
         symbols: list[ProjectSymbol] = []
+        brace_depth = 0
         for row, line in enumerate(lines):
             stripped = line.strip()
             if not stripped or stripped.startswith("//"):
+                brace_depth = max(0, brace_depth + self._brace_delta(line))
                 continue
-            macro = re.match(r"#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
-            if macro:
-                symbols.append(ProjectSymbol(macro.group(1), "macro", path, row, line.find(macro.group(1)), path.name))
-                continue
-            typedef = re.match(r"typedef\b.+\b([A-Za-z_][A-Za-z0-9_]*)\s*;", stripped)
-            if typedef:
-                symbols.append(ProjectSymbol(typedef.group(1), "typedef", path, row, line.find(typedef.group(1)), path.name))
-                continue
-            struct = re.match(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
-            if struct:
-                symbols.append(ProjectSymbol(struct.group(1), "struct", path, row, line.find(struct.group(1)), path.name))
-                continue
-            function = FUNCTION_DEF_RE.match(stripped) or FUNCTION_DECL_RE.match(stripped)
-            if function:
-                return_type = " ".join(function.group(1).split())
-                name = function.group(2)
-                params = " ".join(function.group(3).split())
-                signature = f"{return_type} {name}({params})"
-                symbols.append(ProjectSymbol(name, "function", path, row, line.find(name), f"{path.name}:{row + 1}", signature))
-                continue
-            global_match = GLOBAL_RE.match(stripped)
-            if global_match and "(" not in stripped.split("=", 1)[0]:
-                name = global_match.group(1)
-                if name not in SyntaxHighlighter.KEYWORDS:
-                    symbols.append(ProjectSymbol(name, "global", path, row, line.find(name), f"{path.name}:{row + 1}"))
+            if brace_depth == 0:
+                macro = re.match(r"#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+                if macro:
+                    symbols.append(ProjectSymbol(macro.group(1), "macro", path, row, line.find(macro.group(1)), path.name))
+                    brace_depth = max(0, brace_depth + self._brace_delta(line))
+                    continue
+                typedef = re.match(r"typedef\b.+\b([A-Za-z_][A-Za-z0-9_]*)\s*;", stripped)
+                if typedef:
+                    symbols.append(ProjectSymbol(typedef.group(1), "typedef", path, row, line.find(typedef.group(1)), path.name))
+                    brace_depth = max(0, brace_depth + self._brace_delta(line))
+                    continue
+                struct = re.match(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+                if struct:
+                    symbols.append(ProjectSymbol(struct.group(1), "struct", path, row, line.find(struct.group(1)), path.name))
+                    brace_depth = max(0, brace_depth + self._brace_delta(line))
+                    continue
+                function = FUNCTION_DEF_RE.match(stripped) or FUNCTION_DECL_RE.match(stripped)
+                if function:
+                    return_type = " ".join(function.group(1).split())
+                    name = function.group(2)
+                    params = " ".join(function.group(3).split())
+                    signature = f"{return_type} {name}({params})"
+                    symbols.append(ProjectSymbol(name, "function", path, row, line.find(name), f"{path.name}:{row + 1}", signature))
+                    brace_depth = max(0, brace_depth + self._brace_delta(line))
+                    continue
+                global_match = GLOBAL_RE.match(stripped)
+                if global_match and "(" not in stripped.split("=", 1)[0]:
+                    name = global_match.group(1)
+                    if name not in SyntaxHighlighter.KEYWORDS:
+                        symbols.append(ProjectSymbol(name, "global", path, row, line.find(name), f"{path.name}:{row + 1}"))
+            brace_depth = max(0, brace_depth + self._brace_delta(line))
         return symbols
+
+    def outline(self, path: Path, lines: list[str]) -> list[ProjectSymbol]:
+        return self._scan_file(path, lines)
+
+    def _brace_delta(self, line: str) -> int:
+        code = re.sub(r'".*?"|\'.*?\'|//.*$', "", line)
+        return code.count("{") - code.count("}")
 
 
 @dataclass(frozen=True)
@@ -852,6 +904,7 @@ class CDiagnosticEngine:
         diagnostics.extend(self._duplicate_includes(lines))
         diagnostics.extend(self._strings_and_brackets(lines))
         diagnostics.extend(self._missing_semicolons(lines))
+        diagnostics.extend(self._semantic_checks(lines))
         diagnostics.sort(key=lambda item: (item.row, item.col, item.message))
         return diagnostics
 
@@ -921,6 +974,113 @@ class CDiagnosticEngine:
             ) or "=" in stripped:
                 diagnostics.append(Diagnostic(row, len(line), "missing semicolon"))
         return diagnostics
+
+    def _semantic_checks(self, lines: list[str]) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        scopes: list[dict[str, tuple[int, int, bool]]] = []
+        switch_stack: list[tuple[int, set[str], bool]] = []
+        block_stack: list[str] = []
+        pending_blocks: list[str] = []
+        completed_if_candidate = False
+
+        for row, line in enumerate(lines):
+            code = self._strip_comments_and_strings(line).strip()
+            if not code:
+                continue
+
+            if code.startswith("else") and not completed_if_candidate:
+                diagnostics.append(Diagnostic(row, line.find("else"), "orphan else"))
+            completed_if_candidate = False
+
+            declaration = LOCAL_DECL_RE.match(code)
+            if declaration and scopes and "(" not in code.split("=", 1)[0]:
+                name = declaration.group(1)
+                current = scopes[-1]
+                if name in current:
+                    diagnostics.append(Diagnostic(row, line.find(name), f"duplicate local variable: {name}"))
+                else:
+                    current[name] = (row, line.find(name), False)
+
+            for name in list(scopes[-1].keys()) if scopes else []:
+                if re.search(rf"\b{re.escape(name)}\b", code) and not re.search(rf"\b{re.escape(name)}\b\s*(?:=|;)", code):
+                    row0, col0, _ = scopes[-1][name]
+                    scopes[-1][name] = (row0, col0, True)
+
+            if re.match(r"switch\s*\(", code):
+                pending_blocks.append("switch")
+            elif re.match(r"if\s*\(", code):
+                pending_blocks.append("if")
+            elif re.match(r"else\b", code):
+                pending_blocks.append("else")
+            elif re.match(r"(for|while|do)\b", code):
+                pending_blocks.append("control")
+
+            if switch_stack:
+                case_match = re.match(r"case\s+([^:]+)\s*:", code)
+                if case_match:
+                    label = " ".join(case_match.group(1).split())
+                    switch_depth, labels, has_default = switch_stack[-1]
+                    if label in labels:
+                        diagnostics.append(Diagnostic(row, line.find("case"), f"duplicate case label: {label}"))
+                    else:
+                        labels.add(label)
+                    switch_stack[-1] = (switch_depth, labels, has_default)
+                elif re.match(r"default\s*:", code):
+                    switch_depth, labels, has_default = switch_stack[-1]
+                    if has_default:
+                        diagnostics.append(Diagnostic(row, line.find("default"), "duplicate default label in switch"))
+                    switch_stack[-1] = (switch_depth, labels, True)
+
+            for char in code:
+                if char == "{":
+                    block_kind = pending_blocks.pop() if pending_blocks else "block"
+                    scopes.append({})
+                    block_stack.append(block_kind)
+                    if block_kind == "switch":
+                        switch_stack.append((len(block_stack), set(), False))
+                elif char == "}":
+                    if scopes:
+                        diagnostics.extend(self._unused_local_diagnostics(scopes.pop()))
+                    closed_kind = block_stack.pop() if block_stack else "block"
+                    while switch_stack and switch_stack[-1][0] > len(block_stack):
+                        switch_stack.pop()
+                    completed_if_candidate = closed_kind == "if"
+
+        for scope in scopes:
+            diagnostics.extend(self._unused_local_diagnostics(scope))
+        return diagnostics
+
+    def _strip_comments_and_strings(self, line: str) -> str:
+        result: list[str] = []
+        index = 0
+        in_string = ""
+        escaped = False
+        while index < len(line):
+            if not in_string and line.startswith("//", index):
+                break
+            char = line[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = ""
+                result.append(" ")
+            elif char in ('"', "'"):
+                in_string = char
+                result.append(" ")
+            else:
+                result.append(char)
+            index += 1
+        return "".join(result)
+
+    def _unused_local_diagnostics(self, scope: dict[str, tuple[int, int, bool]]) -> list[Diagnostic]:
+        return [
+            Diagnostic(row, col, f"unused local variable: {name}")
+            for name, (row, col, used) in scope.items()
+            if not used and not name.startswith("_")
+        ]
 
 
 class HeaderScanner:

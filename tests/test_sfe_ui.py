@@ -938,6 +938,35 @@ class EditorNormalModeTests(unittest.TestCase):
         self.assertEqual(app.mode, "LIST")
         self.assertIn("add", app.status)
 
+    def test_command_outline_lists_symbols_and_enter_jumps(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = [
+            "#define LIMIT 8",
+            "typedef int count_t;",
+            "struct model;",
+            "int total;",
+            "int add(int a, int b) {",
+            "    return a + b;",
+            "}",
+        ]
+
+        app._execute_command("outline")
+        app.list_cursor = next(index for index, line in enumerate(app.list_lines) if "function add" in line)
+        app._handle_list_key("\n")
+
+        self.assertEqual(app.mode, "NORMAL")
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (4, 4))
+
+    def test_symbols_command_keeps_outline_compatible_enter_jump(self):
+        app = EditorApp(stdscr=None, path=None)
+        app.buffer.lines = ["int add(int a, int b) {", "    return a + b;", "}"]
+
+        app._execute_command("symbols")
+        app._handle_list_key("\n")
+
+        self.assertEqual(app.mode, "NORMAL")
+        self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 4))
+
     def test_command_diag_lists_diagnostics(self):
         app = EditorApp(stdscr=None, path=None)
         app.buffer.lines = ["int value = 1"]
@@ -1767,6 +1796,37 @@ class EditorNormalModeTests(unittest.TestCase):
             self.assertTrue(app._jump_back())
             self.assertEqual(app.path, main)
             self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (1, len("    return project_add")))
+
+    def test_jump_to_definition_opens_local_include_before_symbol_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            header = root / "model.h"
+            main = root / "main.c"
+            header.write_text("#pragma once\n#define LIMIT 8\n", encoding="utf-8")
+            main.write_text('#include "model.h"\nint main(void) { return LIMIT; }\n', encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(main))
+            app.buffer.cursor_row = 0
+            app.buffer.cursor_col = len('#include "model')
+
+            self.assertTrue(app._jump_to_definition())
+
+            self.assertEqual(app.path, header)
+            self.assertEqual((app.buffer.cursor_row, app.buffer.cursor_col), (0, 0))
+            self.assertIn("Include: model.h", app.status)
+
+    def test_jump_to_definition_reports_system_include_without_opening(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main = root / "main.c"
+            main.write_text("#include <stdio.h>\nint main(void) { return 0; }\n", encoding="utf-8")
+            app = EditorApp(stdscr=None, path=str(main))
+            app.buffer.cursor_row = 0
+            app.buffer.cursor_col = len("#include <stdio")
+
+            self.assertFalse(app._jump_to_definition())
+
+            self.assertEqual(app.path, main)
+            self.assertIn("System include: stdio.h", app.status)
 
     def test_diagnostic_navigation_wraps_forward_and_backward(self):
         app = EditorApp(stdscr=None, path=None)
